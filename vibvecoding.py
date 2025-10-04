@@ -165,7 +165,7 @@ def search_and_extract(school, country=None, max_pages=20):
 
 # --- Example run ---
 if __name__ == "__main__":
-    school = "machine learning funding for phd students in oregon state university"
+    school = "machine learning funding for phd students in univfersity of exeter"
     country = "United Kingdom"
     data = search_and_extract(school, country, max_pages=10)
 
