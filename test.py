@@ -1,334 +1,400 @@
-# from agents import Agent, WebSearchTool, trace, Runner, gen_trace_id, function_tool, OpenAIChatCompletionsModel
-# from agents.model_settings import ModelSettings
-# from pydantic import BaseModel
-# from dotenv import load_dotenv
-# from openai import AsyncOpenAI
-# from serpapi.google_search import GoogleSearch
-# import re
-# import time
-# import requests
-# import asyncio
-# from urllib.parse import urljoin, urlparse
-# from bs4 import BeautifulSoup
-# from dateutil import parser as dateparser
-# import os
-# from sendgrid.helpers.mail import Mail, Email, To, Content
-# from typing import Dict
-# from IPython.display import display, Markdown
-# from typing import Optional, List, Any
-# load_dotenv(override=True)
-# SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
+import os
+import re
+import time
+import asyncio
+import aiohttp
+import requests
+import xml.etree.ElementTree as ET
+from pydantic import BaseModel
+from dotenv import load_dotenv
+from serpapi.google_search import GoogleSearch
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+from typing import List, Dict, Any
 
-# openai_api_key = os.getenv('OPENAI_API_KEY')
-# groq_api_key = os.getenv('GROQ_API_KEY')
-# google_api_key = os.getenv('GOOGLE_API_KEY')
+from agents import Agent, Runner, trace, function_tool
 
-# if openai_api_key:
-#     print(f"OpenAI API Key exists and begins {openai_api_key[:8]}")
-# else:
-#     print("OpenAI API Key not set")
+load_dotenv(override=True)
 
-# HEADERS = {"User-Agent": "FundingScraper/1.0 (research; contact: you@example.com)"}
-# KEYWORDS = re.compile(r"(ph\.?d|doctoral|doctorate|masters?|m\.sc|mres|scholarship|funding|studentship|stipend)", re.I)
+# === Environment Keys ===
+SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
+openai_api_key = os.getenv('OPENAI_API_KEY')
 
-# @function_tool
-# def find_university_domain(school: str, country: Optional[str]=None, num: int=5) -> List[str]:
-#     """
-#     Find likely university domains for any school in any country using SerpAPI.
-#     - school: "University of Melbourne"
-#     - country: "Australia" (optional)
-#     Returns: list of domains (https://...)
-#     """
+if openai_api_key:
+    print(f"✅ OpenAI API Key loaded ({openai_api_key[:8]}...)")
+else:
+    print("❌ OpenAI API Key not set")
 
-#     query_parts = [school, "official site", "scholarship", "funding"]
-#     if country:
-#         query_parts.append(country)
-#     query = " ".join(query_parts)
+HEADERS = {"User-Agent": "FundingScraper/1.0 (research; contact: you@example.com)"}
 
-#     search = GoogleSearch({
-#         "q": query,
-#         "api_key": SERPAPI_KEY,
-#         "num": num
-#     })
-#     results = search.get_dict()
-#     print(results)
+# === Cache to prevent duplicate crawling ===
+crawl_cache = {}
 
-#     urls = []
-#     if "organic_results" in results:
-#         for r in results["organic_results"]:
-#             if "link" in r:
-#                 urls.append(r["link"])
+# === Enhanced Domain Matching ===
+def get_base_domain(netloc: str) -> str:
+    """Extract base domain from netloc for flexible matching"""
+    parts = netloc.split('.')
+    if len(parts) >= 2:
+        if parts[-2] in ['ac', 'edu', 'gov'] and len(parts) > 2:
+            return '.'.join(parts[-3:])
+        return '.'.join(parts[-2:])
+    return netloc
 
-#     # Filter to probable university domains
-#     cleaned = []
-#     for u in urls:
-#         netloc = urlparse(u).netloc.lower()
-#         if any(x in netloc for x in [school.lower().replace(" ", ""), "univ", "edu", "ac."]):
-#             base = f"https://{netloc}"
-#             if base not in cleaned:
-#                 cleaned.append(base)
+def is_same_domain(url1: str, url2: str) -> bool:
+    """Check if two URLs belong to the same base domain"""
+    domain1 = get_base_domain(urlparse(url1).netloc)
+    domain2 = get_base_domain(urlparse(url2).netloc)
+    return domain1 == domain2
 
-#     return cleaned[:num]
-
-# class SchoolAndDomain(BaseModel):
-#     school: str
-#     "The name of the school"
-#     domain: str
-#     "The school's official domain"
-
-# search_agent_instructions = """You are a university domain research assistant. 
-
-
-# FOLLOW THESE RULES:
-# 1. FIRST, check if specific school names are EXPLICITLY mentioned in the query
-# 2. IF explicit schools are mentioned:
-#    - Return ONLY those explicitly mentioned schools and their domains
-#    - Do NOT add any other schools
-# 3. IF NO explicit schools are mentioned:
-#    - Search for relevant schools based on the query context
-#    - Return the most relevant schools and their domains
-
-# Examples:
-# - "Find MIT and Stanford domains" → Return: MIT, Stanford (only explicit)
-# - "University of Toronto website" → Return: University of Toronto (only explicit)
-# - "Top AI PhD programs" → Return: List of relevant schools (no explicit ones)
-# - "Machine learning scholarships in UK" → Return: List of relevant UK schools"""
-
-# class MultipleSchoolsAndDomains(BaseModel):
-#     schools: List[SchoolAndDomain]
-#     "List of schools and their domains"
-#     search_type: str
-#     "Either 'explicit' (schools were explicitly mentioned) or 'searched' (schools were found via search)"
-
-# search_agent = Agent(
-#     name="Smart university domain finder",
-#     instructions=search_agent_instructions,
-#     tools=[find_university_domain],
-#     model="gpt-4o-mini",
-#     output_type=MultipleSchoolsAndDomains
-# )
-
-# search_agent_tool = search_agent.as_tool(
-#     tool_name="university_domain_search",
-#     tool_description="Find university domains for given schools or research topics"
-# )
-
-# def remove_duplicate_schools(schools_list: List[SchoolAndDomain]) -> List[SchoolAndDomain]:
-#     """Remove duplicate schools from the list"""
-#     seen = set()
-#     unique_schools = []
+# === Enhanced Link Extraction ===
+def extract_links_enhanced(html: str, base_url: str) -> List[str]:
+    """Extract links with better domain matching"""
+    soup = BeautifulSoup(html, "lxml")
+    base_netloc = urlparse(base_url).netloc
+    base_domain = get_base_domain(base_netloc)
     
-#     for school_domain in schools_list:
-#         # Normalize school name for comparison
-#         normalized_name = school_domain.school.lower().strip()
-        
-#         if normalized_name not in seen:
-#             seen.add(normalized_name)
-#             unique_schools.append(school_domain)
-#         else:
-#             print(f"Skipped duplicate: {school_domain.school}")
+    links = set()
     
-#     return unique_schools
-
-# class KeywordSuggestion(BaseModel):
-#     primary_keywords: List[str]
-#     secondary_keywords: List[str]
-#     search_strategy: str
-#     content_types: List[str]
-
-# keyword_agent_instructions = """You are a search strategy expert. Analyze the user's query and suggest the most effective keywords for web crawling."""
-
-# keyword_agent = Agent(
-#     name="Keyword Strategy Agent",
-#     instructions=keyword_agent_instructions,
-#     model="gpt-4o-mini",
-#     output_type=KeywordSuggestion
-# )
-
-# # Make sure you have the keyword tool defined
-# @function_tool
-# async def get_search_keywords(query: str) -> Dict[str, Any]:
-#     """
-#     Analyze user query and return optimized keywords for web crawling.
-#     """
-#     keyword_result = await Runner.run(keyword_agent, query)
-#     keywords = keyword_result.final_output
-    
-#     return {
-#         "primary_keywords": keywords.primary_keywords,
-#         "secondary_keywords": keywords.secondary_keywords,
-#         "search_strategy": keywords.search_strategy,
-#         "content_types": keywords.content_types
-#     }
-
-# # --- Utilities ---
-# def polite_get(url, timeout=15):
-#     try:
-#         r = requests.get(url, headers=HEADERS, timeout=timeout)
-#         if r.ok and "text/html" in r.headers.get("content-type", ""):
-#             return r.text
-#     except Exception:
-#         return None
-#     return None
-
-# def extract_links(html, base_url):
-#     soup = BeautifulSoup(html, "lxml")
-#     base = "{uri.scheme}://{uri.netloc}".format(uri=urlparse(base_url))
-#     links = []
-#     for a in soup.find_all("a", href=True):
-#         href = a["href"].strip()
-#         if href.startswith("#") or href.startswith("mailto:") or href.startswith("tel:"):
-#             continue
-#         absolute = urljoin(base, href)
-#         if urlparse(absolute).netloc.endswith(urlparse(base).netloc):
-#             links.append(absolute)
-#     return list(set(links))
-
-# def extract_relevant_text(html):
-#     soup = BeautifulSoup(html, "lxml")
-#     text = soup.get_text(separator="\n", strip=True)
-#     return text
-
-# @function_tool
-# def crawl_university_funding(domain_url: str, max_pages: int = 20) -> List[Dict[str, str]]:
-#     """
-#     Your original crawler - use this one with the keyword tool integration.
-#     """
-#     # Keywords for funding-related pages and links
-#     FUNDING_KEYWORDS = re.compile(
-#         r"(ph\.?d|doctoral|doctorate|masters?|m\.sc|funding|scholarship|studentship|stipend|bursary|grant|financial aid|tuition|fee|finance|money support|aid)",
-#         re.I
-#     )
-    
-#     # Keywords in URLs that indicate funding pages
-#     FUNDING_URL_PATTERNS = [
-#         '/funding/', '/scholarship/', '/financial-aid/', '/bursary/', 
-#         '/studentship/', '/fees-funding/', '/finance/', '/grants/',
-#         '/funding-opportunities/', '/scholarships/', '/financialsupport/'
-#     ]
-    
-#     visited, to_visit, results = set(), {domain_url}, []
-    
-#     while to_visit and len(visited) < max_pages:
-#         url = to_visit.pop()
-#         if url in visited:
-#             continue
-#         visited.add(url)
-        
-#         time.sleep(1)  # Be polite
-#         html = polite_get(url)
-#         if not html:
-#             continue
-        
-#         # Extract all links from the page
-#         soup = BeautifulSoup(html, "lxml")
-#         text = soup.get_text(separator="\n", strip=True)
-        
-#         # Check if this page itself is about funding
-#         is_funding_page = FUNDING_KEYWORDS.search(text)
-        
-#         # Also check if URL suggests it's a funding page
-#         url_suggests_funding = any(pattern in url.lower() for pattern in FUNDING_URL_PATTERNS)
-        
-#         if is_funding_page or url_suggests_funding:
-#             results.append({
-#                 "url": url, 
-#                 "text": text[:5000],
-#                 "title": soup.title.string if soup.title else "No title",
-#                 "page_type": "funding_page"
-#             })
-        
-#         # Extract and prioritize funding-related links
-#         all_links = extract_links(html, url)
-#         funding_links = []
-#         regular_links = []
-        
-#         for link in all_links:
-#             # Check if link text or URL suggests funding
-#             link_text = ""
-#             a_tag = soup.find('a', href=link.replace(domain_url, '').lstrip('/'))
-#             if a_tag:
-#                 link_text = a_tag.get_text(strip=True)
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if href.startswith(('#', 'mailto:', 'tel:', 'javascript:')):
+            continue
             
-#             link_lower = link.lower()
-#             is_funding_link = (
-#                 FUNDING_KEYWORDS.search(link_text) or
-#                 any(pattern in link_lower for pattern in FUNDING_URL_PATTERNS) or
-#                 FUNDING_KEYWORDS.search(link)
-#             )
-            
-#             if is_funding_link:
-#                 funding_links.append(link)
-#             else:
-#                 regular_links.append(link)
+        absolute = urljoin(base_url, href)
+        url_netloc = urlparse(absolute).netloc
+        url_domain = get_base_domain(url_netloc)
         
-#         # Add funding links first (higher priority)
-#         for link in funding_links:
-#             if link not in visited and link not in to_visit:
-#                 to_visit.add(link)
-        
-#         # Then add regular links
-#         for link in regular_links[:10]:  # Limit regular links to avoid crawling too much
-#             if link not in visited and link not in to_visit:
-#                 to_visit.add(link)
+        if url_domain == base_domain:
+            links.add(absolute)
     
-#     print(f"✅ Crawled {len(visited)} pages, found {len(results)} funding pages")
-#     return results
+    return list(links)
 
-# # Navigator Agent
-# navigator_instructions = """You are a research navigator that coordinates between different research tools.
-
-# DECISION PROCESS:
-# 1. Use get_search_keywords to understand the optimal search strategy
-# 2. Use university_domain_search to find relevant university domains
-# 3. Use crawl_university_funding to search for funding opportunities on those domains
-
-# The keyword analysis helps you focus on what matters most to the user."""
-
-# class FundingPage(BaseModel):
-#     url: str
-#     title: str
-#     preview: str
-
-# class UniversityResult(BaseModel):
-#     school: str
-#     domain: str
-#     funding_pages: List[FundingPage]
-
-# class NavigationResult(BaseModel):
-#     universities: List[UniversityResult]
-#     search_strategy: str
-#     total_funding_pages: int
-#     keyword_analysis: Optional[Dict[str, Any]]
-
-# navigator_agent = Agent(
-#     name="Research Navigator",
-#     instructions=navigator_instructions,
-#     tools=[get_search_keywords, search_agent_tool, crawl_university_funding],
-#     model="gpt-4o-mini",
-#     output_type=NavigationResult
-# )
-
-# if __name__ == "__main__":
-#     query = "Find PhD machine learning funding opportunities at University of Exeter and university of hertfordshire in United Kingdom"
+# === Simplified Sitemap Discovery ===
+async def discover_sitemaps(session: aiohttp.ClientSession, domain_url: str) -> List[str]:
+    """Discover sitemaps for comprehensive link discovery"""
+    sitemap_urls = []
+    common_sitemaps = ['/sitemap.xml', '/sitemap_index.xml', '/robots.txt']
     
-#     with trace("Comprehensive Search"):
-#         print("searching...")
-#         print(f"searching: {query}")
+    for sitemap_path in common_sitemaps:
+        sitemap_url = urljoin(domain_url, sitemap_path)
+        try:
+            async with session.get(sitemap_url, headers=HEADERS, timeout=5) as response:
+                if response.status == 200:
+                    sitemap_urls.append(sitemap_url)
+                    print(f"✅ Found sitemap: {sitemap_url}")
+        except:
+            continue
+    
+    return sitemap_urls
+
+async def parse_sitemap(session: aiohttp.ClientSession, sitemap_url: str) -> List[str]:
+    """Parse sitemap and extract all URLs"""
+    urls = []
+    try:
+        async with session.get(sitemap_url, headers=HEADERS, timeout=10) as response:
+            if response.status == 200:
+                content = await response.text()
+                
+                try:
+                    root = ET.fromstring(content)
+                    for url_elem in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
+                        if url_elem.text:
+                            urls.append(url_elem.text)
+                except ET.ParseError:
+                    for line in content.split('\n'):
+                        line = line.strip()
+                        if line and (line.startswith('http://') or line.startswith('https://')):
+                            urls.append(line)
+                
+                print(f"📊 Sitemap provided {len(urls)} URLs")
+                return urls
+    except Exception as e:
+        print(f"❌ Error parsing sitemap: {e}")
+    
+    return []
+
+# === Enhanced Crawler ===
+async def async_get(session: aiohttp.ClientSession, url: str, timeout: int = 10) -> str:
+    """Asynchronous polite GET request"""
+    try:
+        async with session.get(url, headers=HEADERS, timeout=timeout) as response:
+            if response.status == 200 and "text/html" in response.headers.get("content-type", "").lower():
+                return await response.text()
+    except:
+        pass
+    return ""
+
+def extract_relevant_text(html: str) -> str:
+    """Extract clean text from HTML"""
+    if not html:
+        return ""
+    soup = BeautifulSoup(html, "lxml")
+    for script in soup(["script", "style"]):
+        script.decompose()
+    return soup.get_text(separator="\n", strip=True)
+
+def extract_title(html: str) -> str:
+    """Extract title from HTML"""
+    if not html:
+        return "No title"
+    soup = BeautifulSoup(html, "lxml")
+    if soup.title and soup.title.string:
+        return soup.title.string.strip()
+    return "No title"
+
+async def crawl_university_domain_async(domain_url: str, keywords: List[str], max_pages: int = 15) -> List[Dict[str, str]]:
+    """Enhanced crawler with sitemap discovery"""
+    # Create cache key
+    cache_key = f"{domain_url}_{'_'.join(sorted(keywords))}"
+    
+    if cache_key in crawl_cache:
+        print(f"✅ Using cached results for {domain_url}")
+        return crawl_cache[cache_key]
+    
+    keyword_pattern = re.compile("|".join(map(re.escape, keywords)), re.I)
+    visited, to_visit, results = set(), {domain_url}, []
+    
+    async with aiohttp.ClientSession() as session:
+        print(f"🔍 Starting crawl for {domain_url}")
         
-#         # Use navigator agent directly - it will handle both domain search AND funding crawl
-#         navigator_result = await Runner.run(navigator_agent, query, max_turns=25)
+        # Step 1: Discover sitemaps
+        sitemap_urls = await discover_sitemaps(session, domain_url)
+        for sitemap_url in sitemap_urls:
+            sitemap_links = await parse_sitemap(session, sitemap_url)
+            for link in sitemap_links[:10]:  # Limit sitemap links
+                if link not in visited and link not in to_visit:
+                    to_visit.add(link)
         
-#         print(f"\n=== NAVIGATOR RESULTS ===")
-#         print(f"Search strategy: {navigator_result.final_output.search_strategy}")
-#         print(f"Universities found: {len(navigator_result.final_output.universities)}")
-#         print(f"Total funding pages: {navigator_result.final_output.total_funding_pages}")
-        
-#         for uni in navigator_result.final_output.universities:
-#             print(f"\n🎓 {uni.school}")
-#             print(f"   🌐 {uni.domain}")
-#             print(f"   📚 Funding pages: {len(uni.funding_pages)}")
+        # Step 2: Crawl
+        while to_visit and len(visited) < max_pages:
+            current_url = to_visit.pop()
+            if current_url in visited:
+                continue
+                
+            visited.add(current_url)
+            html = await async_get(session, current_url)
             
-#             for page in uni.funding_pages[:10]:  # Show first 3 pages
-#                 print(f"      • {page.title}")
-#                 print(f"        {page.url}")
+            if not html:
+                continue
+                
+            text = extract_relevant_text(html)
+            title = extract_title(html)
+            
+            # Check if page is relevant
+            if keyword_pattern.search(text) or any(k.lower() in current_url.lower() for k in keywords):
+                results.append({
+                    "url": current_url, 
+                    "title": title,
+                    "preview": text[:200] + "..." if len(text) > 200 else text
+                })
+                print(f"✅ Funding page: {title}")
+
+            # Extract new links
+            new_links = extract_links_enhanced(html, current_url)
+            for link in new_links[:5]:  # Limit new links per page
+                if link not in visited and link not in to_visit:
+                    to_visit.add(link)
+
+            await asyncio.sleep(0.5)
+    
+    print(f"📊 Crawl completed: {len(results)} funding pages found")
+    
+    # Convert to simple format
+    funding_pages = []
+    for result in results:
+        funding_pages.append({
+            "url": result["url"],
+            "title": result["title"],
+            "preview": result["preview"]
+        })
+    
+    crawl_cache[cache_key] = funding_pages
+    return funding_pages
+
+# === Direct Approach - No Complex Agent Coordination ===
+@function_tool
+async def search_university_funding(query: str) -> Dict[str, Any]:
+    """
+    Direct funding search tool that handles everything in one call.
+    Extracts universities, finds domains, generates keywords, and crawls.
+    """
+    print(f"🎯 Starting funding search for: {query}")
+    
+    # Step 1: Extract university names from query
+    university_keywords = ["university", "college", "institute"]
+    words = query.lower().split()
+    universities = []
+    
+    i = 0
+    while i < len(words):
+        if words[i] in university_keywords and i > 0:
+            # Get the university name (usually 1-3 words before "university")
+            name_parts = []
+            for j in range(max(0, i-2), i+1):
+                if j < len(words):
+                    name_parts.append(words[j])
+            university_name = " ".join(name_parts).title()
+            universities.append(university_name)
+        i += 1
+    
+    # Fallback: look for capitalized words that might be university names
+    if not universities:
+        potential_universities = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+University\b', query)
+        universities = list(set(potential_universities))
+    
+    # If still no universities found, use defaults
+    if not universities:
+        universities = ["University of Exeter", "University of Oxford"]
+    
+    print(f"🎓 Found universities: {universities}")
+    
+    # Step 2: Find domains for each university
+    university_domains = {}
+    for university in universities:
+        print(f"🔍 Searching domain for: {university}")
+        
+        search = GoogleSearch({
+            "q": f"{university} official site",
+            "api_key": SERPAPI_KEY,
+            "num": 3
+        })
+        results = search.get_dict()
+        
+        if "organic_results" in results:
+            for r in results["organic_results"]:
+                if "link" in r:
+                    url = r["link"]
+                    netloc = urlparse(url).netloc.lower()
+                    if any(x in netloc for x in ["univ", "edu", "ac."]):
+                        university_domains[university] = url
+                        print(f"✅ Domain for {university}: {url}")
+                        break
+        
+        # If no domain found, use a default
+        if university not in university_domains:
+            # Create a plausible default domain
+            domain_name = university.lower().replace(" ", "").replace("of", "") + ".edu"
+            university_domains[university] = f"https://www.{domain_name}"
+            print(f"⚠️  Using default domain for {university}: {university_domains[university]}")
+    
+    # Step 3: Generate keywords
+    funding_keywords = ["phd", "doctoral", "funding", "scholarship", "studentship", "stipend", "financial aid"]
+    query_keywords = re.findall(r'\b\w+\b', query.lower())
+    
+    relevant_keywords = [kw for kw in query_keywords if kw in funding_keywords or len(kw) > 5]
+    
+    if not relevant_keywords:
+        relevant_keywords = ["phd", "funding", "scholarship"]
+    
+    keywords = list(set(relevant_keywords + funding_keywords))[:6]
+    print(f"🔑 Using keywords: {keywords}")
+    
+    # Step 4: Crawl each university domain
+    all_results = []
+    total_pages = 0
+    
+    for university, domain in university_domains.items():
+        print(f"🚀 Crawling {university} at {domain}")
+        
+        try:
+            funding_pages = await crawl_university_domain_async(domain, keywords, max_pages=10)
+            all_results.append({
+                "school": university,
+                "domain": domain,
+                "funding_pages": funding_pages
+            })
+            total_pages += len(funding_pages)
+            print(f"✅ {university}: {len(funding_pages)} funding pages found")
+        except Exception as e:
+            print(f"❌ Error crawling {university}: {e}")
+            all_results.append({
+                "school": university,
+                "domain": domain,
+                "funding_pages": []
+            })
+    
+    # Return final results
+    result = {
+        "universities": all_results,
+        "total_pages": total_pages,
+        "search_strategy": f"Enhanced crawl with keywords: {', '.join(keywords)}"
+    }
+    
+    print(f"🎉 Search completed: {total_pages} total funding pages found across {len(universities)} universities")
+    return result
+
+# === Simple Agent that just uses the all-in-one tool ===
+class SimpleFundingResult(BaseModel):
+    universities: List[Dict[str, Any]]
+    total_pages: int
+    search_strategy: str
+
+simple_agent_instructions = """
+You are a university funding search assistant. 
+When given a query about university funding, use the search_university_funding tool.
+Return the results exactly as provided by the tool.
+"""
+
+simple_agent = Agent(
+    name="Simple Funding Searcher",
+    instructions=simple_agent_instructions,
+    tools=[search_university_funding],
+    model="gpt-4o-mini",
+    output_type=SimpleFundingResult
+)
+
+# === Main Execution ===
+async def main():
+    query = "Find PhD machine learning funding opportunities at University of Exeter and University of Oxford"
+    
+    print("=" * 60)
+    print("🎓 UNIVERSITY FUNDING SEARCHER")
+    print("=" * 60)
+    print(f"Query: {query}")
+    print("=" * 60)
+
+    try:
+        with trace("Funding Search"):
+            print(f"\n🔍 Starting search...")
+            
+            # Use the simple agent with just one tool
+            result = await Runner.run(simple_agent, query, max_turns=3)
+            
+            if not result or not result.final_output:
+                print("❌ No results found")
+                return
+
+            output = result.final_output
+            
+            print(f"\n" + "=" * 60)
+            print("📊 FINAL RESULTS")
+            print("=" * 60)
+            print(f"Search strategy: {output.search_strategy}")
+            print(f"Universities processed: {len(output.universities)}")
+            print(f"Total funding pages: {output.total_pages}")
+            print("=" * 60)
+
+            for uni in output.universities:
+                print(f"\n🎓 {uni['school']}")
+                print(f"   🌐 {uni['domain']}")
+                print(f"   📚 Funding pages: {len(uni['funding_pages'])}")
+                
+                if uni['funding_pages']:
+                    for i, page in enumerate(uni['funding_pages'][:5], 1):
+                        print(f"      {i}. {page['title']}")
+                        print(f"         🔗 {page['url']}")
+                        if page['preview']:
+                            print(f"         📝 {page['preview'][:100]}...")
+                        print()
+                else:
+                    print("      No funding pages found")
+                    
+    except Exception as e:
+        print(f"❌ Error occurred: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    # Clear cache and run
+    crawl_cache.clear()
+    asyncio.run(main())

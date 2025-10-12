@@ -1,7 +1,12 @@
-import gradio as gr
-from dotenv import load_dotenv
-from schorlarship_finder import chat
-load_dotenv(override=True)
+# def chat(message, history):
+#     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": message}]
+#     response = Runner.run(schorlaship_agent, messages)
+#     return response.final_output
+
+# import gradio as gr
+# from dotenv import load_dotenv
+# from schorlarship_finder import chat
+# load_dotenv(override=True)
 
 # # === Gradio UI Setup ===
 # def create_gradio_interface():
@@ -105,23 +110,4 @@ load_dotenv(override=True)
     
 #     return interface
 
-gr.ChatInterface(chat, type="messages").launch()
-
-
-async def main():
-    """Run the Gradio interface"""
-    print("🚀 Starting FindMyScholarship AI...")
-    print("📊 Gradio interface will be available at: http://localhost:7860")
-    
-    interface = create_gradio_interface()
-    interface.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,
-        show_error=True
-    )
-
-if __name__ == "__main__":
-    
-    # Run the Gradio app
-    asyncio.run(main())
+# gr.ChatInterface(chat, type="messages").launch()
