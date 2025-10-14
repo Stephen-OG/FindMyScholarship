@@ -1,6 +1,6 @@
 from agents import Agent, Runner, trace, function_tool
 
-from school_domain_finder import search_agent
+from school_domain_agent import search_agent
 from crawler_agent import crawler_agent
 
 search_agent_tool = search_agent.as_tool(

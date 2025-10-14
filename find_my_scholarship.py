@@ -1,6 +1,6 @@
 import gradio as gr
 from dotenv import load_dotenv
-from schorlarship_finder import chat
+from schorlaship_manager import SchorlashipManager
 load_dotenv(override=True)
 
 # # === Gradio UI Setup ===
@@ -105,23 +105,26 @@ load_dotenv(override=True)
     
 #     return interface
 
-gr.ChatInterface(chat, type="messages").launch()
+#gr.ChatInterface(chat, type="messages").launch()
 
 
-async def main():
-    """Run the Gradio interface"""
-    print("🚀 Starting FindMyScholarship AI...")
-    print("📊 Gradio interface will be available at: http://localhost:7860")
+async def run(query: str):
+    async for chunk in SchorlashipManager().run(query):
+        yield chunk
+
+with gr.Blocks(theme=gr.themes.Default(primary_hue="sky")) as ui:
+    gr.Markdown("# Find My Schorlaship")
+    query_textbox = gr.Textbox(
+                     label="🔍 What funding are you looking for?",
+                     placeholder="e.g., 'PhD funding in computer science at MIT and Stanford' or 'Master's scholarships for international students in UK universities'",
+                     lines=3,
+                     max_lines=3
+                 )
+    run_button = gr.Button("Run", variant="primary")
+    report = gr.Markdown(label="Report")
     
-    interface = create_gradio_interface()
-    interface.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,
-        show_error=True
-    )
+     # 🔥 Enable streaming updates
+    run_button.click(run, inputs=query_textbox, outputs=report, api_name="run")
+    query_textbox.submit(run, inputs=query_textbox, outputs=report)
 
-if __name__ == "__main__":
-    
-    # Run the Gradio app
-    asyncio.run(main())
+ui.launch(inbrowser=True)
