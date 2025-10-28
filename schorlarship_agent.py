@@ -1,7 +1,7 @@
 from agents import Agent, Runner, trace, function_tool
 
-from school_domain_agent import search_agent
-from crawler_agent import crawler_agent
+from scholarship_agents.school_domain_agent import search_agent
+from scholarship_agents.crawler_agent import crawler_agent
 
 search_agent_tool = search_agent.as_tool(
     tool_name="university_domain_search",
@@ -56,9 +56,9 @@ schorlaship_agent = Agent(
     model="gpt-4o-mini"
 )
 
-def chat(message, history):
+async def chat(message, history):
     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": message}]
-    response = Runner.run(schorlaship_agent, messages)
+    response = await Runner.run(schorlaship_agent, messages)
     return response.final_output
 
     

@@ -1,7 +1,8 @@
-from agents import Agent, function_tool
+from agents import Agent,AgentOutputSchema
+from openai import AsyncOpenAI, function_tool
 from pydantic import BaseModel
+from openai import OpenAI
 from serpapi.google_search import GoogleSearch
-
 from urllib.parse import urlparse
 from dateutil import parser as dateparser
 import os
@@ -9,6 +10,8 @@ from typing import Optional, List
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI()
 SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
 
 @function_tool
@@ -31,7 +34,7 @@ def find_university_domain(school: str, country: Optional[str]=None, num: int=5)
         "num": num
     })
     results = search.get_dict()
-    print(results)
+    #print(results)
 
     urls = []
     if "organic_results" in results:
@@ -77,13 +80,14 @@ Examples:
 class MultipleSchoolsAndDomains(BaseModel):
     schools: List[SchoolAndDomain]
     "List of schools and their domains"
-    search_type: str
-    "Either 'explicit' (schools were explicitly mentioned) or 'searched' (schools were found via search)"
+    search_type: str = "searched"
+    # search_type: str
+    # "Either 'explicit' (schools were explicitly mentioned) or 'searched' (schools were found via search)"
 
-search_agent = Agent(
+client.chat.completions.create(
     name="Smart university domain finder",
     instructions=search_agent_instructions,
     tools=[find_university_domain],
     model="gpt-4o-mini",
-    output_type=MultipleSchoolsAndDomains
+    output_type=AgentOutputSchema(MultipleSchoolsAndDomains, strict_json_schema=False)
 )

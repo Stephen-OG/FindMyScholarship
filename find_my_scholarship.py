@@ -1,7 +1,50 @@
 import gradio as gr
 from dotenv import load_dotenv
-from schorlaship_manager import SchorlashipManager
+#from scholarship_manager import SchorlashipManager
+from schorlarship_agent import chat
 load_dotenv(override=True)
+
+# async def run(query: str):
+#     async for chunk in SchorlashipManager().run(query):
+#         yield chunk
+
+# with gr.Blocks(theme=gr.themes.Default(primary_hue="sky")) as ui:
+#     gr.Markdown("# Find My Schorlaship")
+#     query_textbox = gr.Textbox(
+#                      label="🔍 What funding are you looking for?",
+#                      placeholder="e.g., 'PhD funding in computer science at MIT and Stanford' or 'Master's scholarships for international students in UK universities'",
+#                      lines=3,
+#                      max_lines=3
+#                  )
+#     run_button = gr.Button("Run", variant="primary")
+#     report = gr.Markdown(label="Report")
+    
+#      # 🔥 Enable streaming updates
+#     run_button.click(run, inputs=query_textbox, outputs=report, api_name="run")
+#     query_textbox.submit(run, inputs=query_textbox, outputs=report)
+
+# ui.launch(inbrowser=True)
+gr.ChatInterface(chat, type="messages").launch()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # # === Gradio UI Setup ===
 # def create_gradio_interface():
@@ -106,25 +149,3 @@ load_dotenv(override=True)
 #     return interface
 
 #gr.ChatInterface(chat, type="messages").launch()
-
-
-async def run(query: str):
-    async for chunk in SchorlashipManager().run(query):
-        yield chunk
-
-with gr.Blocks(theme=gr.themes.Default(primary_hue="sky")) as ui:
-    gr.Markdown("# Find My Schorlaship")
-    query_textbox = gr.Textbox(
-                     label="🔍 What funding are you looking for?",
-                     placeholder="e.g., 'PhD funding in computer science at MIT and Stanford' or 'Master's scholarships for international students in UK universities'",
-                     lines=3,
-                     max_lines=3
-                 )
-    run_button = gr.Button("Run", variant="primary")
-    report = gr.Markdown(label="Report")
-    
-     # 🔥 Enable streaming updates
-    run_button.click(run, inputs=query_textbox, outputs=report, api_name="run")
-    query_textbox.submit(run, inputs=query_textbox, outputs=report)
-
-ui.launch(inbrowser=True)
