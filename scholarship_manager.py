@@ -1,13 +1,16 @@
-from agents import Runner, trace, gen_trace_id
-#from .agents.crawler_agent import CrawlerResult, crawler_agent
-from scholarship_agents.school_domain_agent import MultipleSchoolsAndDomains, search_agent
-from scholarship_agents.crawler_agent2 import UniversityFundingAnalysis, web_analyzer_agent
-from typing import Optional, List, Dict, Any
 import asyncio
+
+from agents import Runner, gen_trace_id, trace
+
+from scholarship_agents.crawler_agent import UniversityResult, crawler_agent
+
+# from .agents.crawler_agent import CrawlerResult, crawler_agent
+from scholarship_agents.school_domain_agent import MultipleSchoolsAndDomains, search_agent
+
 
 class SchorlashipManager:
     async def run(self, query: str):
-        """ Run the deep research process, yielding the status updates and the final report"""
+        """Run the deep research process, yielding the status updates and the final report"""
         trace_id = gen_trace_id()
         with trace("Research trace", trace_id=trace_id):
             print(f"View trace: https://platform.openai.com/traces/trace?trace_id={trace_id}")
@@ -15,7 +18,7 @@ class SchorlashipManager:
             print("Starting research...")
             await asyncio.sleep(1)
             search_plan = await self.find__school_domain(query)
-            yield f"✅ School/s search results: {search_plan.schools}" 
+            yield f"✅ School/s search results: {search_plan.schools}"
             print(f"✅ School/s search results: {search_plan.schools}")
 
             # print("Crawling...")
@@ -28,14 +31,12 @@ class SchorlashipManager:
             crawler = await self.domain_crawler(search_plan)
             yield f"✅ School/s domain crawler results: {crawler}"
             print(f"✅ School/s domain crawler results: {crawler}")
-        
 
     async def find__school_domain(self, query: str) -> MultipleSchoolsAndDomains:
         print("Planning searches...")
         result = await Runner.run(search_agent, f"Query: {query}")
-        #print(f"Will perform {result.final_output} searches")
+        # print(f"Will perform {result.final_output} searches")
         return result.final_output_as(MultipleSchoolsAndDomains)
-
 
     # async def domain_crawler(self, search_data: MultipleSchoolsAndDomains) -> CrawlerResult:
     #     print("Start crawling...")
@@ -43,9 +44,10 @@ class SchorlashipManager:
     #     #print(f"Will perform {result.final_output} searches")
     #     return result.final_output_as(CrawlerResult)
 
-    
-    async def domain_crawler(self, search_data: MultipleSchoolsAndDomains) -> UniversityFundingAnalysis:
+    async def domain_crawler(
+        self, search_data: MultipleSchoolsAndDomains
+    ) -> UniversityResult:
         print("Start crawling...")
-        result = await Runner.run(web_analyzer_agent, f"Schools and Domains: {search_data}")
-        #print(f"Will perform {result.final_output} searches")
-        return result.final_output_as(UniversityFundingAnalysis)
+        result = await Runner.run(crawler_agent, f"Schools and Domains: {search_data}")
+        # print(f"Will perform {result.final_output} searches")
+        return result.final_output_as(UniversityResult)

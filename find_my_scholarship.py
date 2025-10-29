@@ -1,8 +1,51 @@
 import gradio as gr
 from dotenv import load_dotenv
-#from scholarship_manager import SchorlashipManager
-from schorlarship_agent import chat
+
+from scholarship_agents.schorlarship_agent import chat
+
 load_dotenv(override=True)
+
+
+# ui.launch(inbrowser=True)
+
+demo = gr.ChatInterface(
+    fn=chat,
+    title="Find My Scholarship 🤖",
+    type="messages", 
+    description="Find scholarships, funding, and grants for master's or PhD programs worldwide."
+)
+if __name__ == "__main__":
+    demo.launch()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # async def run(query: str):
 #     async for chunk in SchorlashipManager().run(query):
@@ -18,31 +61,10 @@ load_dotenv(override=True)
 #                  )
 #     run_button = gr.Button("Run", variant="primary")
 #     report = gr.Markdown(label="Report")
-    
+
 #      # 🔥 Enable streaming updates
 #     run_button.click(run, inputs=query_textbox, outputs=report, api_name="run")
 #     query_textbox.submit(run, inputs=query_textbox, outputs=report)
-
-# ui.launch(inbrowser=True)
-gr.ChatInterface(chat, type="messages").launch()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -68,16 +90,16 @@ gr.ChatInterface(chat, type="messages").launch()
 #         gr.Markdown(
 #             """
 #             # 🎓 FindMyScholarship AI
-            
+
 #             **Discover funding opportunities for your academic journey!**
-            
+
 #             This AI-powered tool helps you find scholarships, PhD funding, master's studentships, and other financial support opportunities from university websites worldwide.
-            
+
 #             ### How to use:
 #             1. Describe what you're looking for (field of study, degree level, preferred universities/countries)
 #             2. The AI will identify relevant universities and search their official websites
 #             3. Get direct links to funding opportunities with descriptions
-            
+
 #             ### Example queries:
 #             - "PhD funding in machine learning at University of Toronto and University of British Columbia"
 #             - "Master's scholarships for international students in environmental science"
@@ -85,7 +107,7 @@ gr.ChatInterface(chat, type="messages").launch()
 #             - "Find me AI research scholarships"
 #             """
 #         )
-        
+
 #         with gr.Row():
 #             with gr.Column(scale=2):
 #                 query_input = gr.Textbox(
@@ -94,13 +116,13 @@ gr.ChatInterface(chat, type="messages").launch()
 #                     lines=3,
 #                     max_lines=3
 #                 )
-                
+
 #                 search_btn = gr.Button(
 #                     "🚀 Search Funding Opportunities",
 #                     variant="primary",
 #                     size="lg"
 #                 )
-            
+
 #             with gr.Column(scale=1):
 #                 gr.Markdown(
 #                     """
@@ -111,13 +133,13 @@ gr.ChatInterface(chat, type="messages").launch()
 #                     - Use relevant keywords like 'scholarship', 'funding', 'studentship'
 #                     """
 #                 )
-        
+
 #         with gr.Row():
 #             output = gr.Markdown(
 #                 label="📋 Funding Opportunities Found",
 #                 elem_classes="results-box"
 #             )
-        
+
 #         # Examples section
 #         gr.Markdown("### 💬 Example Queries to Try:")
 #         examples = gr.Examples(
@@ -131,21 +153,21 @@ gr.ChatInterface(chat, type="messages").launch()
 #             inputs=query_input,
 #             label="Click any example to try it!"
 #         )
-        
+
 #         # Connect the button
 #         search_btn.click(
 #             fn=search_funding_opportunities,
 #             inputs=query_input,
 #             outputs=output
 #         )
-        
+
 #         # Also allow Enter key to submit
 #         query_input.submit(
 #             fn=search_funding_opportunities,
 #             inputs=query_input,
 #             outputs=output
 #         )
-    
+
 #     return interface
 
-#gr.ChatInterface(chat, type="messages").launch()
+# gr.ChatInterface(chat, type="messages").launch()

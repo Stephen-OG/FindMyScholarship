@@ -1,24 +1,45 @@
+from typing import Any, Dict, List, Optional
+
 from agents import Agent, AgentOutputSchema
+from dotenv import load_dotenv
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+
 from utils.crawler import crawl_university_funding
 
-# Crawler Agent
-crawler_instructions = """You are a crawler agent that coordinates between different research tools.
+load_dotenv()
 
-DECISION PROCESS:
-1. Use crawl_university_funding to search for funding opportunities on those domains after analysing the user needs
-2. Return comprehensive results including both domains and funding info
+crawler_instructions = """You are a crawler agent that discovers funding opportunities on university websites.
 
-The keyword analysis helps you focus on what matters most to the user."""
+YOUR JOB:
+1. Receive university domains and user query from the orchestrator
+2. Use crawl_university_funding to search each domain
+   - IMPORTANT: Always pass the user_query parameter so the crawler can extract relevant keywords
+   - Example: crawl_university_funding(domain_url="https://mit.edu", user_query="PhD funding in machine learning")
+3. Analyze the crawled pages and structure the results
+4. Return comprehensive funding information for each university
+
+WHAT TO INCLUDE:
+- All funding pages found (with URLs, titles, and previews)
+- Summary of what types of funding are available
+- Keywords that were prioritized in the search
+- Total count of funding opportunities
+
+BE SPECIFIC:
+- Include actual page titles and URLs
+- Extract meaningful previews from the page text
+- Note which pages are most relevant to the user's query"""
+
 
 class FundingPage(BaseModel):
     url: str
-    "Url of the funding page"
+    "URL of the funding page"
     title: str
     "Title of the funding page"
     preview: str
-    "Summary of the page"
+    "Summary/preview of the page content"
+    relevance_score: Optional[int] = None
+    "Relevance score (higher = more relevant to query)"
+
 
 class UniversityResult(BaseModel):
     school: str
@@ -26,22 +47,27 @@ class UniversityResult(BaseModel):
     domain: str
     "The school's official domain"
     funding_pages: List[FundingPage]
-    "The number of funding pages found"
+    "List of funding pages found"
+    summary: Optional[str] = None
+    "Brief summary of funding opportunities at this university"
+
 
 class CrawlerResult(BaseModel):
     universities: List[UniversityResult]
-    "Name of Universities found"
-    search_strategy: Optional[str]
-    "search strategy"
-    total_funding_pages: Optional[int]
-    "Total funding page found"
-    keyword_analysis: Optional[Dict[str, Any]]
-    "Keywords searched for"
+    "Universities crawled with their funding pages"
+    search_strategy: Optional[str] = None
+    "Description of the search strategy used"
+    total_funding_pages: int
+    "Total number of funding pages found across all universities"
+    keyword_analysis: Optional[Dict[str, Any]] = None
+    "Keywords extracted and used for targeted crawling"
 
+
+# Create the crawler agent
 crawler_agent = Agent(
     name="Crawler Agent",
     instructions=crawler_instructions,
     tools=[crawl_university_funding],
     model="gpt-4o-mini",
-    output_type=AgentOutputSchema(CrawlerResult, strict_json_schema=False)
+    output_type=AgentOutputSchema(CrawlerResult, strict_json_schema=False),
 )

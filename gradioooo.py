@@ -30,16 +30,16 @@
 #         gr.Markdown(
 #             """
 #             # 🎓 FindMyScholarship AI
-            
+
 #             **Discover funding opportunities for your academic journey!**
-            
+
 #             This AI-powered tool helps you find scholarships, PhD funding, master's studentships, and other financial support opportunities from university websites worldwide.
-            
+
 #             ### How to use:
 #             1. Describe what you're looking for (field of study, degree level, preferred universities/countries)
 #             2. The AI will identify relevant universities and search their official websites
 #             3. Get direct links to funding opportunities with descriptions
-            
+
 #             ### Example queries:
 #             - "PhD funding in machine learning at University of Toronto and University of British Columbia"
 #             - "Master's scholarships for international students in environmental science"
@@ -47,7 +47,7 @@
 #             - "Find me AI research scholarships"
 #             """
 #         )
-        
+
 #         with gr.Row():
 #             with gr.Column(scale=2):
 #                 query_input = gr.Textbox(
@@ -56,13 +56,13 @@
 #                     lines=3,
 #                     max_lines=3
 #                 )
-                
+
 #                 search_btn = gr.Button(
 #                     "🚀 Search Funding Opportunities",
 #                     variant="primary",
 #                     size="lg"
 #                 )
-            
+
 #             with gr.Column(scale=1):
 #                 gr.Markdown(
 #                     """
@@ -73,13 +73,13 @@
 #                     - Use relevant keywords like 'scholarship', 'funding', 'studentship'
 #                     """
 #                 )
-        
+
 #         with gr.Row():
 #             output = gr.Markdown(
 #                 label="📋 Funding Opportunities Found",
 #                 elem_classes="results-box"
 #             )
-        
+
 #         # Examples section
 #         gr.Markdown("### 💬 Example Queries to Try:")
 #         examples = gr.Examples(
@@ -93,21 +93,21 @@
 #             inputs=query_input,
 #             label="Click any example to try it!"
 #         )
-        
+
 #         # Connect the button
 #         search_btn.click(
 #             fn=search_funding_opportunities,
 #             inputs=query_input,
 #             outputs=output
 #         )
-        
+
 #         # Also allow Enter key to submit
 #         query_input.submit(
 #             fn=search_funding_opportunities,
 #             inputs=query_input,
 #             outputs=output
 #         )
-    
+
 #     return interface
 
 # gr.ChatInterface(chat, type="messages").launch()
