@@ -1,104 +1,18 @@
-import os
-from typing import List, Optional
-from urllib.parse import urlparse
+from typing import List
 
-from agents import Agent, AgentOutputSchema, function_tool
+from agents import Agent, AgentOutputSchema
 from dotenv import load_dotenv
 from pydantic import BaseModel
-from serpapi.google_search import GoogleSearch
+
+from utils.find_domain import find_university_domain
 
 load_dotenv(override=True)
-
-SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
-
-
-@function_tool
-def find_university_domain(school: str, country: Optional[str] = None, num: int = 5) -> List[str]:
-    """Find university domains using SerpAPI"""
-    
-    query_parts = [school, "official site", "scholarship", "funding"]
-    if country:
-        query_parts.append(country)
-    query = " ".join(query_parts)
-
-    search = GoogleSearch({"q": query, "api_key": SERPAPI_KEY, "num": num})
-    results = search.get_dict()
-
-    urls = []
-    if "organic_results" in results:
-        for r in results["organic_results"]:
-            if "link" in r:
-                urls.append(r["link"])
-
-    # BETTER FILTERING - Check for school name keywords in domain
-    cleaned = []
-    school_keywords = school.lower().split()  # ["university", "of", "exeter"]
-    
-    for u in urls:
-        netloc = urlparse(u).netloc.lower()
-        
-        # Check if meaningful keywords from school name appear in domain
-        # Skip common words like "of", "the", "university"
-        meaningful_keywords = [k for k in school_keywords if k not in ["of", "the", "university", "college"]]
-        
-        # Domain should contain at least one meaningful keyword OR be a .ac.uk domain
-        if any(keyword in netloc for keyword in meaningful_keywords) or netloc.endswith(".ac.uk"):
-            base = f"https://{netloc}"
-            if base not in cleaned:
-                cleaned.append(base)
-    
-    # If no results, fall back to more permissive check
-    if not cleaned:
-        for u in urls:
-            netloc = urlparse(u).netloc.lower()
-            if "univ" in netloc or ".edu" in netloc or ".ac." in netloc:
-                base = f"https://{netloc}"
-                if base not in cleaned:
-                    cleaned.append(base)
-
-    return cleaned[:num]
-    
-# def find_university_domain(school: str, country: Optional[str] = None, num: int = 5) -> List[str]:
-#     """
-#     Find likely university domains for any school in any country using SerpAPI.
-#     - school: "University of Melbourne"
-#     - country: "Australia" (optional)
-#     Returns: list of domains (https://...)
-#     """
-
-#     query_parts = [school, "official site", "scholarship", "funding"]
-#     if country:
-#         query_parts.append(country)
-#     query = " ".join(query_parts)
-
-#     search = GoogleSearch({"q": query, "api_key": SERPAPI_KEY, "num": num})
-#     results = search.get_dict()
-#     # print(results)
-
-#     urls = []
-#     if "organic_results" in results:
-#         for r in results["organic_results"]:
-#             if "link" in r:
-#                 urls.append(r["link"])
-
-#     # Filter to probable university domains
-#     cleaned = []
-#     for u in urls:
-#         netloc = urlparse(u).netloc.lower()
-#         if any(x in netloc for x in [school.lower().replace(" ", ""), "univ", "edu", "ac."]):
-#             base = f"https://{netloc}"
-#             if base not in cleaned:
-#                 cleaned.append(base)
-
-#     return cleaned[:num]
-
 
 class SchoolAndDomain(BaseModel):
     school: str
     "The name of the school"
-    domain: str
-    "The school's official domain"
-
+    domains: List[str]
+    "All relevant domains for this school (may include main site, financial aid subdomains, scholarship portals, etc.)"
 
 search_agent_instructions = """You are a university domain research assistant.
 

@@ -1,4 +1,5 @@
 import gradio as gr
+from agents import gen_trace_id, trace
 from dotenv import load_dotenv
 
 from scholarship_agents.schorlarship_agent import chat
@@ -6,16 +7,20 @@ from scholarship_agents.schorlarship_agent import chat
 load_dotenv(override=True)
 
 
-# ui.launch(inbrowser=True)
+trace_id = gen_trace_id()
+with trace("Research2 trace", trace_id=trace_id):
+    print(f"View2 trace: https://platform.openai.com/traces/trace?trace_id={trace_id}")
 
 demo = gr.ChatInterface(
     fn=chat,
-    title="Find My Scholarship 🤖",
-    type="messages", 
+    title="Find My X 🤖",
+    type="messages",
     description="Find scholarships, funding, and grants for master's or PhD programs worldwide."
 )
+
 if __name__ == "__main__":
     demo.launch()
+
 
 
 

@@ -57,11 +57,12 @@ class CrawlerResult(BaseModel):
     "Universities crawled with their funding pages"
     search_strategy: Optional[str] = None
     "Description of the search strategy used"
-    total_funding_pages: int
+    total_funding_pages: int = None
     "Total number of funding pages found across all universities"
     keyword_analysis: Optional[Dict[str, Any]] = None
     "Keywords extracted and used for targeted crawling"
-
+    relevance_tiers: Optional[Dict[str, int]] = None
+    "Count of pages in each relevance tier: exceptional (100+), high (50-99), moderate (5-49)"
 
 # Create the crawler agent
 crawler_agent = Agent(

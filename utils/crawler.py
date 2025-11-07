@@ -1,8 +1,3 @@
-"""
-Enhanced async crawler that extracts keywords from user queries
-Compatible with your existing agents framework
-"""
-
 import asyncio
 import os
 import re
@@ -60,10 +55,14 @@ async def extract_keywords_from_query(query: str) -> List[str]:
                     "role": "user", 
                     "content": f"""Query: {query}
 
-Extract keywords like:
-- Field of study (e.g., 'machine-learning', 'computer-science', 'biology')
+Extract ALL relevant keywords including:
+- Field of study (ANY academic discipline: STEM, humanities, social sciences, arts, etc.)
+  Examples: 'machine-learning', 'renaissance-history', 'organic-chemistry', 'public-policy'
 - Degree level (e.g., 'phd', 'doctoral', 'masters', 'undergraduate')
-- Specific terms (e.g., 'international', 'full-funding', 'tuition-waiver')
+- Geographic/status terms (e.g., 'international', 'european', 'domestic')
+- Funding-specific terms (e.g., 'full-funding', 'tuition-waiver', 'stipend')
+
+Be comprehensive - include all academic terms, even interdisciplinary ones.
 
 Return format: {{"keywords": ["keyword1", "keyword2", ...]}}"""
                 }
@@ -89,15 +88,6 @@ Return format: {{"keywords": ["keyword1", "keyword2", ...]}}"""
         keywords.extend(['masters', 'master', 'msc'])
     if any(word in query_lower for word in ['undergraduate', 'bachelor', 'bachelors']):
         keywords.extend(['undergraduate', 'bachelor'])
-    
-    # Extract common fields
-    fields = re.findall(
-        r'\b(computer science|machine learning|artificial intelligence|'
-        r'data science|biology|physics|chemistry|engineering|mathematics|'
-        r'environmental science|neuroscience|economics)\b',
-        query_lower
-    )
-    keywords.extend([f.replace(' ', '-') for f in fields])
     
     # Extract location/status keywords
     if 'international' in query_lower:
@@ -186,51 +176,36 @@ def is_funding_relevant(
     return is_relevant, score
 
 
-# ----------------------------
-# Main Crawler Function
-# ----------------------------
 @function_tool
 async def crawl_university_funding(
     domain_url: str, 
     user_query: Optional[str] = None,
-    max_pages: int = 50
+    max_pages: int = 100,
+    max_results: int = 40,  # Return up to 40 results
+    min_relevance_score: int = 5 # Minimum score threshold
 ) -> List[Dict[str, str]]:
-    """
-    Async crawler to discover funding pages on a university domain.
-    Extracts keywords from user query for targeted crawling.
+    """..."""
     
-    Args:
-        domain_url: University domain to crawl
-        user_query: User's original search query (optional, for keyword extraction)
-        max_pages: Maximum number of pages to crawl
-    
-    Returns:
-        List of funding pages with url, title, text, relevance_score
-    """
-    
-    # Extract custom keywords from user query
     custom_keywords = []
     if user_query:
         custom_keywords = await extract_keywords_from_query(user_query)
         print(f"🎯 Extracted keywords for {domain_url}: {', '.join(custom_keywords)}")
     
-    # Create dynamic keyword pattern
     keyword_pattern = create_dynamic_keyword_pattern(custom_keywords)
     
     visited: Set[str] = set()
-    to_visit: Set[str] = {domain_url}
+    to_visit: List[tuple[str, int]] = [(domain_url, 0)]  # (url, priority_score)
     results: List[Dict[str, any]] = []
     
     async with aiohttp.ClientSession() as session:
         while to_visit and len(visited) < max_pages:
-            # Prioritize URLs with funding keywords
-            current_batch = []
-            priority_urls = [url for url in to_visit if any(pattern in url.lower() for pattern in FUNDING_URL_PATTERNS)]
-            regular_urls = [url for url in to_visit if url not in priority_urls]
+            # Sort by priority score
+            to_visit.sort(key=lambda x: x[1], reverse=True)
             
-            # Take up to 5 URLs, prioritizing funding-related ones
-            for url in (priority_urls + regular_urls)[:5]:
-                to_visit.remove(url)
+            # Take top 5 URLs
+            current_batch = []
+            for _ in range(min(5, len(to_visit))):
+                url, _ = to_visit.pop(0)
                 if url not in visited:
                     current_batch.append(url)
                     visited.add(url)
@@ -238,7 +213,6 @@ async def crawl_university_funding(
             if not current_batch:
                 break
             
-            # Fetch pages concurrently
             tasks = [fetch(session, url) for url in current_batch]
             pages = await asyncio.gather(*tasks)
             
@@ -250,7 +224,6 @@ async def crawl_university_funding(
                 soup = BeautifulSoup(html, "lxml")
                 text = soup.get_text(separator="\n", strip=True)
                 
-                # Check if page is funding-relevant
                 is_relevant, relevance_score = is_funding_relevant(
                     url, text, keyword_pattern, custom_keywords
                 )
@@ -259,43 +232,63 @@ async def crawl_university_funding(
                     results.append({
                         "url": url,
                         "title": soup.title.string if soup.title else "No title",
-                        "text": text[:5000],
+                        "text": text[:700],
                         "page_type": "funding_page",
                         "relevance_score": relevance_score
                     })
                 
-                # Extract and prioritize links
+                # Extract links with priority scores
                 all_links = extract_links(html, url)
                 
-                # Separate funding-related links
-                funding_links = [
-                    link for link in all_links
-                    if any(pattern in link.lower() for pattern in FUNDING_URL_PATTERNS)
-                ]
-                
-                # Links with custom keywords
-                keyword_links = [
-                    link for link in all_links
-                    if link not in funding_links and any(kw in link.lower() for kw in custom_keywords)
-                ]
-                
-                # Regular links
-                regular_links = [
-                    link for link in all_links
-                    if link not in funding_links and link not in keyword_links
-                ]
-                
-                # Add to queue with priority
-                for link in funding_links[:5] + keyword_links[:5] + regular_links[:5]:
-                    if link not in visited and link not in to_visit:
-                        to_visit.add(link)
+                for link in all_links:
+                    if link not in visited and link not in [u for u, _ in to_visit]:
+                        # Calculate priority
+                        priority = 0
+                        
+                        # High priority for funding URLs
+                        if any(pattern in link.lower() for pattern in FUNDING_URL_PATTERNS):
+                            priority += 100
+                            
+                        # Extra priority for deep funding pages
+                        priority += calculate_funding_depth(link) * 20
+                        
+                        # Bonus for custom keywords
+                        for kw in custom_keywords:
+                            if kw in link.lower():
+                                priority += 10
+                        
+                        to_visit.append((link, priority))
 
-                print(funding_links)
-                #print(visited)
+    # Filter by minimum relevance score
+    filtered_results = [r for r in results if r.get("relevance_score", 0) >= min_relevance_score]
     
-    # Sort results by relevance score
-    results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    # Sort by relevance score (highest first)
+    filtered_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
     
-    print(f"✅ Crawled {len(visited)} pages, found {len(results)} funding pages for {domain_url}")
+    # Return top results up to max_results
+    final_results = filtered_results[:max_results]
+
+    # Log relevance distribution for monitoring
+    tier_100_plus = len([r for r in final_results if r.get("relevance_score", 0) >= 100])
+    tier_50_99 = len([r for r in final_results if 50 <= r.get("relevance_score", 0) < 100])
+    tier_5_49 = len([r for r in final_results if 5 <= r.get("relevance_score", 0) < 50])
     
-    return results
+    print(f"✅ {domain_url}: {len(final_results)} pages | "
+          f"🔥 Exceptional (100+): {tier_100_plus} | "
+          f"⭐ High (50-99): {tier_50_99} | "
+          f"✓ Moderate (5-49): {tier_5_49}")
+    
+    return final_results
+                        
+    # print(results)
+    # results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    # print(f"✅ Crawled {len(visited)} pages, found {len(results)} funding pages for {domain_url}")
+    
+    # return results
+
+
+def calculate_funding_depth(url: str) -> int:
+    """Count funding-related terms in URL"""
+    url_lower = url.lower()
+    funding_terms = ['funding', 'scholarship', 'phd', 'doctoral', 'studentship', 'financial', 'bursary']
+    return sum(url_lower.count(term) for term in funding_terms)
