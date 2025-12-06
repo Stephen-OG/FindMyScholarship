@@ -6,6 +6,7 @@ from agents import function_tool
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+
 from utils.logger import logger
 
 load_dotenv(override=True)

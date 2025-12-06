@@ -7,7 +7,7 @@
 PYTHON = uv run python
 GRADIO = uv run gradio
 VENV = .venv
-APP = find_my_scholarship.py
+APP = app.py
 
 # Default target
 .DEFAULT_GOAL := help

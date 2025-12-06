@@ -1,0 +1,13 @@
+requests
+python-dotenv
+gradio
+pypdf
+openai
+openai-agents
+aiohttp
+beautifulsoup4
+pydantic
+lxml
+tqdm
+uvicorn
+serpapi
