@@ -6,6 +6,8 @@ from agents import function_tool
 from dotenv import load_dotenv
 from serpapi.google_search import GoogleSearch
 
+from utils.logger import logger
+
 load_dotenv(override=True)
 
 SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
@@ -55,7 +57,8 @@ def find_university_domain(school: str, country: Optional[str] = None) -> List[s
                 base = f"https://{netloc}"
                 if base not in cleaned:
                     cleaned.append(base)
-
+                    
+    logger.info(f"Cleaned domains: {cleaned}")
     return cleaned[:num]
     
 # def find_university_domain(school: str, country: Optional[str] = None, num: int = 5) -> List[str]:

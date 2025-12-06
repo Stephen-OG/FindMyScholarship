@@ -1,18 +1,13 @@
-from typing import List
-
 from agents import Agent, AgentOutputSchema
 from dotenv import load_dotenv
-from pydantic import BaseModel
 
+from models.domain_finder_model import MultipleSchoolsAndDomains
 from utils.find_domain import find_university_domain
+from utils.logger import logger
 
 load_dotenv(override=True)
 
-class SchoolAndDomain(BaseModel):
-    school: str
-    "The name of the school"
-    domains: List[str]
-    "All relevant domains for this school (may include main site, financial aid subdomains, scholarship portals, etc.)"
+logger.info("Starting school domain agent")
 
 search_agent_instructions = """You are a university domain research assistant.
 
@@ -35,14 +30,6 @@ Examples:
 - "Funding at Cambridge" → ONLY Cambridge (explicit)
 
 BE STRICT: If you see a university name, that's the ONLY one they want!"""
-
-class MultipleSchoolsAndDomains(BaseModel):
-    schools: List[SchoolAndDomain]
-    "List of schools and their domains"
-    #search_type: str = "searched"
-    search_type: str
-    "Either 'explicit' (schools were explicitly mentioned) or 'searched' (schools were found via search)"
-
 
 search_agent = Agent(
     name="Smart university domain finder",

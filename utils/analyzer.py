@@ -1,3 +1,4 @@
+import json
 import os
 
 import aiohttp
@@ -5,11 +6,11 @@ from agents import function_tool
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+from utils.logger import logger
 
 load_dotenv(override=True)
+
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-
 
 @function_tool
 async def analyze_funding_page(url: str, title: str, preview: str, user_query: str) -> dict:
@@ -27,7 +28,7 @@ async def analyze_funding_page(url: str, title: str, preview: str, user_query: s
     """
     
     # Fetch full page content
-    print(f"📄 Analyzing: {url}")
+    logger.info(f"📄 Analyzing: {url}")
     
     async with aiohttp.ClientSession() as session:
         try:
@@ -49,10 +50,10 @@ async def analyze_funding_page(url: str, title: str, preview: str, user_query: s
                     # Limit to reasonable size (10k chars = ~2500 tokens)
                     full_text = full_text[:10000]
                 else:
-                    print(f"⚠️  Failed to fetch {url}, using preview only")
+                    logger.warning(f"⚠️  Failed to fetch {url}, using preview only")
                     full_text = preview
         except Exception as e:
-            print(f"⚠️  Error fetching {url}: {e}, using preview only")
+            logger.error(f"⚠️  Error fetching {url}: {e}, using preview only")
             full_text = preview
     
     analysis_prompt = f"""Analyze this university funding page and extract key information.
@@ -112,5 +113,4 @@ Return as JSON with this structure:
         temperature=0.3
     )
     
-    import json
     return json.loads(response.choices[0].message.content)

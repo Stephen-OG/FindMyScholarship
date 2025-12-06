@@ -6,22 +6,19 @@ from scholarship_agents.schorlarship_agent import chat
 
 load_dotenv(override=True)
 
-
 trace_id = gen_trace_id()
 with trace("Research2 trace", trace_id=trace_id):
-    print(f"View2 trace: https://platform.openai.com/traces/trace?trace_id={trace_id}")
+    print(f"View3 trace: https://platform.openai.com/traces/trace?trace_id={trace_id}")
 
 demo = gr.ChatInterface(
     fn=chat,
-    title="Find My X 🤖",
+    title="Find My 🤖",
     type="messages",
     description="Find scholarships, funding, and grants for master's or PhD programs worldwide."
 )
 
 if __name__ == "__main__":
     demo.launch()
-
-
 
 
 

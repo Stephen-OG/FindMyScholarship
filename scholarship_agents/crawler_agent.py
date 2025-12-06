@@ -5,8 +5,11 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from utils.crawler import crawl_university_funding
+from utils.logger import logger
 
 load_dotenv()
+
+logger.info("Starting crawler agent")
 
 crawler_instructions = """You are a crawler agent that discovers funding opportunities on university websites.
 

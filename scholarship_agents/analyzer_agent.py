@@ -1,11 +1,12 @@
-
 from typing import List, Optional
 
 from agents import Agent, AgentOutputSchema
 from pydantic import BaseModel
 
 from utils.analyzer import analyze_funding_page
+from utils.logger import logger
 
+logger.info("Starting analyzer agent")
 
 # Pydantic models for structured output
 class FundingOpportunity(BaseModel):

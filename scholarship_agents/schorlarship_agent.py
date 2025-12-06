@@ -175,8 +175,12 @@
 
 from agents import Agent, Runner
 
+from scholarship_agents.analyzer_agent import analyzer_agent
 from scholarship_agents.crawler_agent import crawler_agent
 from scholarship_agents.school_domain_agent import search_agent
+from utils.logger import logger
+
+logger.info("Starting scholarship agent")
 
 search_agent_tool = search_agent.as_tool(
     tool_name="university_domain_search",
@@ -188,7 +192,12 @@ crawler_agent_tool = crawler_agent.as_tool(
     tool_description="Crawl university domains for given relevant keywords or research topics",
 )
 
-tools = [search_agent_tool, crawler_agent_tool]
+analyzer_agent_tool = analyzer_agent.as_tool(
+    tool_name="analyze_funding_pages",
+    tool_description="Analyze crawled funding pages to extract structured information",
+)
+
+tools = [search_agent_tool, crawler_agent_tool, analyzer_agent_tool]
 
 system_prompt = """
 You are FindMyScholarship AI - an intelligent assistant that helps students discover funding opportunities.
@@ -203,7 +212,12 @@ APP WORKFLOW:
    - If user asks for many universities, make MULTIPLE separate crawl calls
    - Each university returns up to 40 pages ranked by relevance (scores 5-100+)
    - Example: For 6 universities, make 2 calls with 3 domains each
-5. RESULTS COMPILATION: Present structured funding opportunities with URLs, titles, and relevance
+5. ANALYZE CONTENT: Use analyze_funding_pages to extract structured details
+   - Pass the crawler results AND user query
+   - Analyze ONLY pages with score > 50.
+   - This extracts specific scholarship names, amounts, deadlines, eligibility
+   - Returns organized, detailed funding information
+
 
 CONTEXT MANAGEMENT:
 - Each university returns TOP 10 most relevant pages (ranked automatically)
@@ -212,6 +226,8 @@ CONTEXT MANAGEMENT:
   * Call 1: First 3 universities
   * Call 2: Next 3 universities
   * etc.
+- Only analyze pages with relevance scores > 50
+- Ignore any page ≤ 50 relevance
 
 TYPES OF FUNDING YOU CAN FIND:
 - PhD scholarships and studentships
@@ -236,7 +252,8 @@ User: "PhD funding in machine learning at MIT, Stanford, Berkeley, CMU, and Harv
 1. Use university_domain_search to get all 5 domains
 2. Call crawl_universities(domains=[MIT, Stanford, Berkeley], user_query=...)
 3. Call crawl_universities(domains=[CMU, Harvard], user_query=...)
-4. Present combined results grouped by university
+4  call analyze_funding_pages to extract structured details
+5. Present combined results grouped by university
 
 REMEMBER: Break large requests into smaller batches to avoid context limits!
 """

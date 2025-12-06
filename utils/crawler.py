@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+from utils.logger import logger
+
 load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -239,6 +241,8 @@ async def crawl_university_funding(
                 
                 # Extract links with priority scores
                 all_links = extract_links(html, url)
+
+                print(f"🔗 Extracted links: {all_links}")
                 
                 for link in all_links:
                     if link not in visited and link not in [u for u, _ in to_visit]:
@@ -273,7 +277,7 @@ async def crawl_university_funding(
     tier_50_99 = len([r for r in final_results if 50 <= r.get("relevance_score", 0) < 100])
     tier_5_49 = len([r for r in final_results if 5 <= r.get("relevance_score", 0) < 50])
     
-    print(f"✅ {domain_url}: {len(final_results)} pages | "
+    logger.info(f"✅ {domain_url}: {len(final_results)} pages | "
           f"🔥 Exceptional (100+): {tier_100_plus} | "
           f"⭐ High (50-99): {tier_50_99} | "
           f"✓ Moderate (5-49): {tier_5_49}")
