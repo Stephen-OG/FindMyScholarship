@@ -36,7 +36,32 @@
 
 
 
+### Hugging Face Version
 
+# def create_gradio_interface():
+#     with gr.Blocks() as interface:   # <-- removed theme for compatibility
+
+#         gr.Markdown("# 🎓 FindMyScholarship AI")
+
+#         chatbot = gr.Chatbot(label="📋 Funding Search Results", height=500)
+#         query = gr.Textbox(
+#             label="🔍 What funding are you looking for?",
+#             placeholder="e.g., PhD funding in machine learning at University of Oregon or UK universities"
+#         )
+#         search_btn = gr.Button("🚀 Search Funding")
+
+#         async def run_query(message, history):
+#             result = await chat(message, history)
+
+#             history.append({"role": "user", "content": message})
+#             history.append({"role": "assistant", "content": result})
+
+#             return history, ""  # clears input
+
+#         search_btn.click(run_query, [query, chatbot], [chatbot, query])
+#         query.submit(run_query, [query, chatbot], [chatbot, query])
+
+#     return interface
 
 
 
