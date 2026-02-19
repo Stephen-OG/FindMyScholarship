@@ -118,7 +118,7 @@
 
 
 # # Create main orchestrator agent
-# schorlaship_agent = Agent(
+# scholarship_agent = Agent(
 #     name="Scholarship Researcher",
 #     instructions=system_prompt,
 #     tools=tools,
@@ -162,7 +162,7 @@
 #     messages.append({"role": "user", "content": message})
 
 #     # Run the agent
-#     response = await Runner.run(schorlaship_agent, messages)
+#     response = await Runner.run(scholarship_agent, messages)
 #     return response.final_output
 
 
@@ -184,17 +184,38 @@ logger.info("Starting scholarship agent")
 
 search_agent_tool = search_agent.as_tool(
     tool_name="university_domain_search",
-    tool_description="Find university domains for given schools or research topics",
+    tool_description="Find university domains for given schools or research topics. Call ONCE per query to get all relevant universities. Returns list of universities with their official domains.",
 )
 
 crawler_agent_tool = crawler_agent.as_tool(
     tool_name="Crawler",
-    tool_description="Crawl university domains for given relevant keywords or research topics",
+    tool_description="""Crawl university domains to find funding pages. 
+    
+    USAGE: Call this tool ONCE per batch of 3-4 universities. After crawling all universities, DO NOT call again.
+    
+    Input: University domains (3-4 max per call) and user query
+    Output: List of funding pages with URLs, titles, previews, and relevance scores
+    
+    CRITICAL RULES:
+    - Each domain is crawled ONLY ONCE - the crawler automatically skips duplicates
+    - Call once per batch until all unique universities are crawled
+    - Then STOP - do not call again
+    - Pass the user's original query for keyword extraction
+    - If you've already crawled a domain, do NOT include it in subsequent calls""",
 )
 
 analyzer_agent_tool = analyzer_agent.as_tool(
     tool_name="analyze_funding_pages",
-    tool_description="Analyze crawled funding pages to extract structured information",
+    tool_description="""Analyze crawled funding pages to extract structured information.
+    
+    USAGE: Call this tool ONCE after all crawling is complete. After analysis, DO NOT call again.
+    
+    Input: All crawled results from Crawler tool + user query
+    Output: Structured funding information with opportunities, amounts, deadlines, eligibility
+    
+    IMPORTANT:
+    - Call ONCE with all crawler results
+    - Then STOP - analysis is complete""",
 )
 
 tools = [search_agent_tool, crawler_agent_tool, analyzer_agent_tool]
@@ -202,30 +223,39 @@ tools = [search_agent_tool, crawler_agent_tool, analyzer_agent_tool]
 system_prompt = """
 You are FindMyScholarship AI - an intelligent assistant that helps students discover funding opportunities.
 
-APP WORKFLOW:
+APP WORKFLOW (EXECUTE ONCE, THEN STOP):
 1. USER INPUT: Student describes what they're looking for (field of study, degree level, preferred universities, etc.)
-2. UNIVERSITY IDENTIFICATION: Extract and identify relevant universities from the query
-3. DOMAIN DISCOVERY: Use the university_domain_search tool to find official university websites
-4. SMART CRAWLING: Use the crawl_universities tool to search university websites
-   - CRITICAL: Always pass the user's original query to crawl_universities for keyword extraction
-   - CRITICAL: Crawl MAX 3-4 universities per call to avoid exceeding context limits
-   - If user asks for many universities, make MULTIPLE separate crawl calls
+2. DOMAIN DISCOVERY: Use the university_domain_search tool ONCE to find all relevant university websites
+   - This returns a list of universities and their domains
+   - DO NOT call this tool multiple times for the same query
+3. SMART CRAWLING: Use the Crawler tool to search university websites
+   - CRITICAL: Call the Crawler tool ONCE per batch of universities (max 3-4 per call)
+   - CRITICAL: Always pass the user's original query to the Crawler for keyword extraction
+   - If you have many universities, make MULTIPLE separate Crawler calls (one per batch)
    - Each university returns up to 40 pages ranked by relevance (scores 5-100+)
-   - Example: For 6 universities, make 2 calls with 3 domains each
-5. ANALYZE CONTENT: Use analyze_funding_pages to extract structured details
-   - Pass the crawler results AND user query
-   - Analyze ONLY pages with score > 50.
+   - Example: For 6 universities, make 2 Crawler calls: First 3, then next 3
+   - STOP CRAWLING once all universities have been crawled
+4. ANALYZE CONTENT: Use analyze_funding_pages ONCE with all crawled results
+   - Pass ALL crawler results from step 3 AND user query
+   - Analyze ONLY pages with score > 50
    - This extracts specific scholarship names, amounts, deadlines, eligibility
    - Returns organized, detailed funding information
+5. PRESENT RESULTS: Format and present the analyzed results to the user
+   - Group by university
+   - Highlight most relevant opportunities
+   - Include direct links
+   - THEN STOP - do not call any more tools
 
+CRITICAL STOPPING RULES:
+- After step 2: DO NOT call university_domain_search again
+- After step 3: DO NOT call Crawler again - you already have all results
+- After step 4: DO NOT call analyze_funding_pages again - analysis is complete
+- After step 5: STOP and present results - workflow is complete
 
 CONTEXT MANAGEMENT:
-- Each university returns TOP 10 most relevant pages (ranked automatically)
-- DO NOT crawl more than 3-4 universities in a single tool call
-- For many universities, use multiple sequential calls:
-  * Call 1: First 3 universities
-  * Call 2: Next 3 universities
-  * etc.
+- Each university returns TOP pages ranked by relevance (automatically sorted)
+- DO NOT crawl more than 3-4 universities in a single Crawler call
+- For many universities, use multiple sequential Crawler calls, then STOP
 - Only analyze pages with relevance scores > 50
 - Ignore any page ≤ 50 relevance
 
@@ -247,19 +277,26 @@ RESPONSE GUIDELINES:
 - Be encouraging and helpful in tone
 - If few results found, suggest alternative searches
 
-EXAMPLE FLOW:
+EXAMPLE FLOW (EXECUTE ONCE, THEN STOP):
 User: "PhD funding in machine learning at MIT, Stanford, Berkeley, CMU, and Harvard"
-1. Use university_domain_search to get all 5 domains
-2. Call crawl_universities(domains=[MIT, Stanford, Berkeley], user_query=...)
-3. Call crawl_universities(domains=[CMU, Harvard], user_query=...)
-4  call analyze_funding_pages to extract structured details
-5. Present combined results grouped by university
 
-REMEMBER: Break large requests into smaller batches to avoid context limits!
+Step 1: Call university_domain_search ONCE → Returns 5 universities
+Step 2: Call Crawler tool with first 3 universities → Returns pages
+Step 3: Call Crawler tool with remaining 2 universities → Returns pages
+Step 4: Call analyze_funding_pages ONCE with ALL results from steps 2-3 → Returns analyzed data
+Step 5: Present results to user → STOP (workflow complete)
+
+DO NOT:
+- Call university_domain_search again after step 1
+- Call Crawler again after step 3 (you already have all pages)
+- Call analyze_funding_pages again after step 4 (analysis is done)
+- Loop back to any previous step
+
+REMEMBER: Execute each step ONCE, then move to the next. After presenting results, STOP.
 """
 
-schorlaship_agent = Agent(
-    name="Schorlaship Researcher", instructions=system_prompt, tools=tools, model="gpt-4o-mini"
+scholarship_agent = Agent(
+    name="Scholarship Researcher", instructions=system_prompt, tools=tools, model="gpt-4o-mini"
 )
 
 
@@ -292,6 +329,7 @@ async def chat(message, history):
     # Append latest user message
     messages.append({"role": "user", "content": message})
 
-    # Run the agent
-    response = await Runner.run(schorlaship_agent, messages)
+    # Run the agent with a hard cap on tool/agent turns to prevent infinite re-crawling loops.
+    # (See `note.ipynb` usage of Runner.run(..., max_turns=25).)
+    response = await Runner.run(scholarship_agent, messages, max_turns=12)
     return response.final_output
