@@ -1,6 +1,6 @@
 # def chat(message, history):
 #     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": message}]
-#     response = Runner.run(schorlaship_agent, messages)
+#     response = Runner.run(scholarship_agent, messages)
 #     return response.final_output
 
 # import gradio as gr

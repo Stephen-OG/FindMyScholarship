@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 from typing import Dict, List, Optional, Set
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import aiohttp
 from agents import function_tool
@@ -124,6 +124,27 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15):
     return None
 
 
+def normalize_url(url: str) -> str:
+    """
+    Normalize URL to prevent duplicate fetching.
+    - Removes fragments (#section)
+    - Removes trailing slashes (except for root)
+    - Converts to lowercase
+    - Removes default ports
+    """
+    parsed = urlparse(url)
+    # Remove fragment
+    normalized = urlunparse((
+        parsed.scheme.lower(),
+        parsed.netloc.lower().replace(':80', '').replace(':443', ''),
+        parsed.path.rstrip('/') or '/',  # Keep / for root, remove trailing / otherwise
+        parsed.params,
+        parsed.query,
+        ''  # Remove fragment
+    ))
+    return normalized
+
+
 def extract_links(html: str, base_url: str) -> List[str]:
     """Extract all internal links from HTML"""
     soup = BeautifulSoup(html, "lxml")
@@ -135,9 +156,13 @@ def extract_links(html: str, base_url: str) -> List[str]:
         if href.startswith("#") or href.startswith("mailto:") or href.startswith("tel:"):
             continue
         absolute = urljoin(base, href)
-        if urlparse(absolute).netloc.endswith(urlparse(base).netloc):
-            links.append(absolute)
+        parsed = urlparse(absolute)
+        if parsed.netloc.endswith(urlparse(base).netloc):
+            # Normalize the URL before adding
+            normalized = normalize_url(absolute)
+            links.append(normalized)
     
+    # Remove duplicates
     return list(set(links))
 
 
@@ -178,6 +203,9 @@ def is_funding_relevant(
     return is_relevant, score
 
 
+# Global cache to prevent re-crawling the same domain in the same session
+_crawled_domains_cache: Dict[str, List[Dict[str, str]]] = {}
+
 @function_tool
 async def crawl_university_funding(
     domain_url: str, 
@@ -186,17 +214,35 @@ async def crawl_university_funding(
     max_results: int = 40,  # Return up to 40 results
     min_relevance_score: int = 5 # Minimum score threshold
 ) -> List[Dict[str, str]]:
-    """..."""
+    """
+    Crawl a university domain to find funding pages.
+    
+    This function caches results per domain to prevent duplicate crawling.
+    If the same domain is requested again, returns cached results.
+    """
+    # Normalize domain URL for cache key
+    normalized_domain = normalize_url(domain_url)
+    cache_key = f"{normalized_domain}:{user_query or ''}"
+    
+    # Check cache first
+    if cache_key in _crawled_domains_cache:
+        logger.info(f"♻️  Using cached results for {domain_url} (already crawled)")
+        return _crawled_domains_cache[cache_key]
     
     custom_keywords = []
     if user_query:
         custom_keywords = await extract_keywords_from_query(user_query)
-        print(f"🎯 Extracted keywords for {domain_url}: {', '.join(custom_keywords)}")
+        logger.info(f"🎯 Extracted keywords for {domain_url}: {', '.join(custom_keywords)}")
     
     keyword_pattern = create_dynamic_keyword_pattern(custom_keywords)
     
+    # Normalize the starting URL
+    domain_url = normalize_url(domain_url)
+    
     visited: Set[str] = set()
+    to_visit_set: Set[str] = set()  # Track URLs in to_visit for O(1) lookup
     to_visit: List[tuple[str, int]] = [(domain_url, 0)]  # (url, priority_score)
+    to_visit_set.add(domain_url)
     results: List[Dict[str, any]] = []
     
     async with aiohttp.ClientSession() as session:
@@ -208,6 +254,7 @@ async def crawl_university_funding(
             current_batch = []
             for _ in range(min(5, len(to_visit))):
                 url, _ = to_visit.pop(0)
+                to_visit_set.discard(url)  # Remove from set
                 if url not in visited:
                     current_batch.append(url)
                     visited.add(url)
@@ -224,6 +271,12 @@ async def crawl_university_funding(
                     continue
                 
                 soup = BeautifulSoup(html, "lxml")
+                
+                # Remove scripts, styles, and navigation elements (same as analyzer does)
+                # This ensures clean text for both relevance checking and analysis
+                for element in soup(["script", "style", "nav", "footer", "header"]):
+                    element.decompose()
+                
                 text = soup.get_text(separator="\n", strip=True)
                 
                 is_relevant, relevance_score = is_funding_relevant(
@@ -231,10 +284,14 @@ async def crawl_university_funding(
                 )
                 
                 if is_relevant:
+                    # Store full text (limited to 10k chars to match analyzer limit)
+                    # Also keep preview for backward compatibility
+                    full_text = text[:10000]
                     results.append({
                         "url": url,
                         "title": soup.title.string if soup.title else "No title",
-                        "text": text[:700],
+                        "text": text[:700],  # Preview for display
+                        "full_text": full_text,  # Full content for analysis (already cleaned)
                         "page_type": "funding_page",
                         "relevance_score": relevance_score
                     })
@@ -242,26 +299,31 @@ async def crawl_university_funding(
                 # Extract links with priority scores
                 all_links = extract_links(html, url)
 
-                print(f"🔗 Extracted links: {all_links}")
+                logger.debug(f"🔗 Extracted {len(all_links)} links from {url}")
                 
                 for link in all_links:
-                    if link not in visited and link not in [u for u, _ in to_visit]:
+                    # Normalize link before checking
+                    normalized_link = normalize_url(link)
+                    
+                    # O(1) check using sets instead of O(n) list comprehension
+                    if normalized_link not in visited and normalized_link not in to_visit_set:
                         # Calculate priority
                         priority = 0
                         
                         # High priority for funding URLs
-                        if any(pattern in link.lower() for pattern in FUNDING_URL_PATTERNS):
+                        if any(pattern in normalized_link.lower() for pattern in FUNDING_URL_PATTERNS):
                             priority += 100
                             
                         # Extra priority for deep funding pages
-                        priority += calculate_funding_depth(link) * 20
+                        priority += calculate_funding_depth(normalized_link) * 20
                         
                         # Bonus for custom keywords
                         for kw in custom_keywords:
-                            if kw in link.lower():
+                            if kw in normalized_link.lower():
                                 priority += 10
                         
-                        to_visit.append((link, priority))
+                        to_visit.append((normalized_link, priority))
+                        to_visit_set.add(normalized_link)
 
     # Filter by minimum relevance score
     filtered_results = [r for r in results if r.get("relevance_score", 0) >= min_relevance_score]
@@ -281,6 +343,9 @@ async def crawl_university_funding(
           f"🔥 Exceptional (100+): {tier_100_plus} | "
           f"⭐ High (50-99): {tier_50_99} | "
           f"✓ Moderate (5-49): {tier_5_49}")
+    
+    # Cache results to prevent re-crawling the same domain
+    _crawled_domains_cache[cache_key] = final_results
     
     return final_results
                         
