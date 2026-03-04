@@ -41,4 +41,3 @@ skip-magic-trailing-comma = false
 [tool.uv]
 managed = true
 index-url = "https://pypi.org/simple"
-python-preference = "only-system"

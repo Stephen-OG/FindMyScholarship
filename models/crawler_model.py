@@ -12,6 +12,12 @@ class FundingPage(BaseModel):
     "Summary/preview of the page content"
     relevance_score: Optional[int] = None
     "Relevance score (higher = more relevant to query)"
+    text: Optional[str] = None
+    "Backward-compatible preview alias used by older analyzer callers"
+    full_text: Optional[str] = None
+    "Cleaned full page content used for downstream analysis"
+    page_type: Optional[str] = None
+    "Page classification label (e.g., funding_page)"
 
 
 class UniversityResult(BaseModel):
@@ -30,9 +36,9 @@ class CrawlerResult(BaseModel):
     "Universities crawled with their funding pages"
     search_strategy: Optional[str] = None
     "Description of the search strategy used"
-    total_funding_pages: int = None
+    total_funding_pages: Optional[int] = None
     "Total number of funding pages found across all universities"
     keyword_analysis: Optional[Dict[str, Any]] = None
     "Keywords extracted and used for targeted crawling"
     relevance_tiers: Optional[Dict[str, int]] = None
-    "Count of pages in each relevance tier: exceptional (100+), high (50-99), moderate (5-49)",
+    "Count of pages in each relevance tier: exceptional (100+), high (50-99), moderate (5-49)"
