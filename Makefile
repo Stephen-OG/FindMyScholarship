@@ -16,13 +16,19 @@ APP = app.py
 # 🔧 Setup
 # -------------------------------
 
-setup: ## Create virtual environment and install dependencies
+install: 
+	@echo "🔧installing dependencies."
+	python3 -m venv .venv
+	source .venv/bin/activate && pip install -r requirements.txt
+	
+setup:	## Create virtual environment and install dependencies
 	@echo "🔧 Setting up environment..."
 	uv sync
 
 update: ## Update dependencies from pyproject.toml
 	@echo "⬆️  Updating environment..."
-	uv update
+	uv lock --upgrade
+	uv sync
 
 clean: ## Remove all build, cache, and venv files
 	@echo "🧹 Cleaning up..."

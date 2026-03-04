@@ -1,4 +1,5 @@
 import os
+import re
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -11,13 +12,68 @@ from utils.logger import logger
 load_dotenv(override=True)
 
 SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
+_domain_search_cache: dict[str, List[str]] = {}
+
+_SCHOOL_STOPWORDS = {
+    "of", "the", "and", "for", "at", "in", "on",
+    "university", "college", "institute", "school",
+}
+_NON_UNIVERSITY_HINTS = {
+    "research", "institute", "company", "corp", "inc", "foundation", "ngo",
+}
+_UNIVERSITY_HINTS = {
+    "university", "univ", "college", "faculty", "campus", "edu", ".ac.",
+}
+
+
+def _normalize_netloc(url: str) -> str:
+    netloc = urlparse(url).netloc.lower().strip()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    return netloc
+
+
+def _school_tokens(school: str) -> List[str]:
+    raw_tokens = re.findall(r"[a-z0-9]+", school.lower())
+    return [t for t in raw_tokens if len(t) > 2 and t not in _SCHOOL_STOPWORDS]
+
+
+def _is_probable_university_domain(netloc: str, school_tokens: List[str]) -> bool:
+    domain_compact = netloc.replace("-", "").replace(".", "")
+    token_match = any(token in domain_compact for token in school_tokens)
+    has_uni_hint = any(hint in netloc for hint in _UNIVERSITY_HINTS)
+    has_academic_tld = ".edu" in netloc or ".ac." in netloc or netloc.endswith(".ac.uk")
+    has_non_uni_hint = any(hint in netloc for hint in _NON_UNIVERSITY_HINTS)
+
+    # Allow known academic patterns or clear school-name match.
+    if not (token_match or has_uni_hint or has_academic_tld):
+        return False
+
+    # Block clearly non-university org domains unless they also look academic.
+    if has_non_uni_hint and not (has_uni_hint or has_academic_tld):
+        return False
+
+    return True
 
 
 @function_tool
 def find_university_domain(school: str, country: Optional[str] = None) -> List[str]:
     """Find university domains using SerpAPI"""
     num:int = 5
-    query_parts = [school, "official site", "scholarship", "funding"]
+    school_clean = (school or "").strip()
+    if len(school_clean) < 2:
+        logger.info("Skipping domain lookup for empty/invalid school name")
+        return []
+
+    cache_key = f"{school_clean.lower()}|{(country or '').strip().lower()}"
+    if cache_key in _domain_search_cache:
+        cached = _domain_search_cache[cache_key]
+        logger.info(f"Using cached domains for '{school_clean}': {cached}")
+        return cached[:num]
+
+    logger.info(f"Looking up domains for '{school_clean}'")
+
+    query_parts = [school_clean, "official site", "scholarship", "funding"]
 
     if country:
         query_parts.append(country)
@@ -32,33 +88,34 @@ def find_university_domain(school: str, country: Optional[str] = None) -> List[s
             if "link" in r:
                 urls.append(r["link"])
 
-    # BETTER FILTERING - Check for school name keywords in domain
-    cleaned = []
-    school_keywords = school.lower().split()  # ["university", "of", "exeter"]
-    
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    school_tokens = _school_tokens(school_clean)
+
     for u in urls:
-        netloc = urlparse(u).netloc.lower()
-        
-        # Check if meaningful keywords from school name appear in domain
-        # Skip common words like "of", "the", "university"
-        meaningful_keywords = [k for k in school_keywords if k not in ["of", "the", "university", "college"]]
-        
-        # Domain should contain at least one meaningful keyword OR be a .ac.uk domain
-        if any(keyword in netloc for keyword in meaningful_keywords) or netloc.endswith(".ac.uk"):
+        netloc = _normalize_netloc(u)
+        if not netloc:
+            continue
+        if _is_probable_university_domain(netloc, school_tokens):
             base = f"https://{netloc}"
-            if base not in cleaned:
+            if base not in seen:
                 cleaned.append(base)
+                seen.add(base)
     
     # If no results, fall back to more permissive check
     if not cleaned:
         for u in urls:
-            netloc = urlparse(u).netloc.lower()
-            if "univ" in netloc or ".edu" in netloc or ".ac." in netloc:
+            netloc = _normalize_netloc(u)
+            if not netloc:
+                continue
+            if "univ" in netloc or ".edu" in netloc or ".ac." in netloc or any(token in netloc for token in school_tokens):
                 base = f"https://{netloc}"
-                if base not in cleaned:
+                if base not in seen:
                     cleaned.append(base)
+                    seen.add(base)
                     
     logger.info(f"Cleaned domains: {cleaned}")
+    _domain_search_cache[cache_key] = cleaned[:num]
     return cleaned[:num]
     
 # def find_university_domain(school: str, country: Optional[str] = None, num: int = 5) -> List[str]:
