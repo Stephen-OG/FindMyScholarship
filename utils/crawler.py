@@ -1,7 +1,7 @@
 import asyncio
 import os
 import re
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import aiohttp
@@ -9,6 +9,7 @@ from agents import function_tool
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 
 from utils.logger import logger
 
@@ -30,6 +31,16 @@ FUNDING_URL_PATTERNS = [
     "/studentship/", "/fees-funding/", "/finance/", "/grants/",
     "/funding-opportunities/", "/scholarships/", "/financialsupport/",
 ]
+
+
+class UniversityInput(BaseModel):
+    """Strict input schema for formatted crawler batch calls."""
+    school: Optional[str] = None
+    name: Optional[str] = None
+    domain: Optional[str] = None
+    domain_url: Optional[str] = None
+    url: Optional[str] = None
+    domains: Optional[List[str]] = None
 
 
 # ----------------------------
@@ -217,16 +228,16 @@ def is_funding_relevant(
 
 
 # Global cache to prevent re-crawling the same domain in the same session
-_crawled_domains_cache: Dict[str, List[Dict[str, str]]] = {}
+_crawled_domains_cache: Dict[str, List[Dict[str, object]]] = {}
 
-@function_tool
-async def crawl_university_funding(
+async def _crawl_university_funding_impl(
     domain_url: str, 
     user_query: Optional[str] = None,
+    precomputed_keywords: Optional[List[str]] = None,
     max_pages: int = 100,
     max_results: int = 40,  # Return up to 40 results
     min_relevance_score: int = 5 # Minimum score threshold
-) -> List[Dict[str, str]]:
+) -> List[Dict[str, object]]:
     """
     Crawl a university domain to find funding pages.
     
@@ -243,9 +254,10 @@ async def crawl_university_funding(
         logger.info(f"♻️  Using cached results for {domain_url} (domain {base_domain} already crawled)")
         return _crawled_domains_cache[cache_key]
     
-    custom_keywords = []
-    if user_query:
+    custom_keywords = precomputed_keywords or []
+    if not custom_keywords and user_query:
         custom_keywords = await extract_keywords_from_query(user_query)
+    if custom_keywords:
         logger.info(f"🎯 Extracted keywords for {domain_url}: {', '.join(custom_keywords)}")
     
     keyword_pattern = create_dynamic_keyword_pattern(custom_keywords)
@@ -257,7 +269,7 @@ async def crawl_university_funding(
     to_visit_set: Set[str] = set()  # Track URLs in to_visit for O(1) lookup
     to_visit: List[tuple[str, int]] = [(domain_url, 0)]  # (url, priority_score)
     to_visit_set.add(domain_url)
-    results: List[Dict[str, any]] = []
+    results: List[Dict[str, Any]] = []
     
     async with aiohttp.ClientSession() as session:
         while to_visit and len(visited) < max_pages:
@@ -298,13 +310,16 @@ async def crawl_university_funding(
                 )
                 
                 if is_relevant:
-                    # Store full text (limited to 10k chars to match analyzer limit)
+                    # Store full text with a tighter cap to avoid model context overflow downstream.
+                    # Analyzer further truncates per page, so keeping this concise is sufficient.
                     # Also keep preview for backward compatibility
-                    full_text = text[:10000]
+                    full_text = text[:2000]
+                    preview_text = text[:700]
                     results.append({
                         "url": url,
                         "title": soup.title.string if soup.title else "No title",
-                        "text": text[:700],  # Preview for display
+                        "preview": preview_text,  # Contracted preview field
+                        "text": preview_text,  # Backward compatibility for older callers
                         "full_text": full_text,  # Full content for analysis (already cleaned)
                         "page_type": "funding_page",
                         "relevance_score": relevance_score
@@ -375,3 +390,177 @@ def calculate_funding_depth(url: str) -> int:
     url_lower = url.lower()
     funding_terms = ['funding', 'scholarship', 'phd', 'doctoral', 'studentship', 'financial', 'bursary']
     return sum(url_lower.count(term) for term in funding_terms)
+
+
+def _normalize_domain_url(domain: str) -> str:
+    """Ensure domain has an HTTP scheme so it can be crawled."""
+    cleaned = (domain or "").strip()
+    if not cleaned:
+        return ""
+    if cleaned.startswith(("http://", "https://")):
+        return cleaned
+    return f"https://{cleaned}"
+
+
+def _coerce_university_input(entry: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Best-effort coercion from search-agent style objects to school/domain pairs."""
+    school = (entry.get("school") or entry.get("name") or "").strip()
+
+    domain = entry.get("domain") or entry.get("domain_url") or entry.get("url")
+    if not domain:
+        domains = entry.get("domains")
+        if isinstance(domains, list) and domains:
+            domain = domains[0]
+
+    domain = _normalize_domain_url(str(domain or ""))
+    if not domain:
+        return None
+
+    return {
+        "school": school or "Unknown School",
+        "domain": domain,
+    }
+
+
+@function_tool
+async def crawl_universities_formatted(
+    universities: Optional[List[UniversityInput]] = None,
+    schools: Optional[List[UniversityInput]] = None,
+    domains: Optional[List[str]] = None,
+    user_query: Optional[str] = None,
+    max_pages: int = 40,
+    max_results_per_university: int = 8,
+    min_relevance_score: int = 5,
+) -> Dict[str, Any]:
+    """
+    Crawl multiple universities and return a fully formatted CrawlerResult object.
+
+    Expected university item shape:
+    - {"school": "...", "domain": "https://example.edu"}
+    OR search-agent style:
+    - {"school": "...", "domains": ["https://example.edu", ...]}
+    """
+    normalized_universities: List[Dict[str, str]] = []
+    seen_domains: Set[str] = set()
+    input_universities = universities or schools or []
+    # Hard cap to keep tool output within model context limits.
+    effective_max_results_per_university = max(1, min(max_results_per_university, 8))
+    effective_max_pages = max(10, min(max_pages, 40))
+
+    for raw in input_universities:
+        raw_dict = raw.model_dump() if isinstance(raw, UniversityInput) else raw
+        if not isinstance(raw_dict, dict):
+            continue
+        normalized = _coerce_university_input(raw_dict)
+        if not normalized:
+            continue
+
+        dedupe_key = get_base_domain(normalized["domain"])
+        if dedupe_key in seen_domains:
+            continue
+        seen_domains.add(dedupe_key)
+        normalized_universities.append(normalized)
+
+    # Backward-compatible input style: domains=["https://mit.edu", ...]
+    for domain in domains or []:
+        normalized_domain = _normalize_domain_url(str(domain or ""))
+        if not normalized_domain:
+            continue
+        dedupe_key = get_base_domain(normalized_domain)
+        if dedupe_key in seen_domains:
+            continue
+        seen_domains.add(dedupe_key)
+        normalized_universities.append(
+            {
+                "school": dedupe_key,
+                "domain": normalized_domain,
+            }
+        )
+
+    # Hard cap to bound runtime and context size for broad queries.
+    normalized_universities = normalized_universities[:5]
+
+    extracted_keywords = await extract_keywords_from_query(user_query) if user_query else []
+    crawler_universities: List[Dict[str, Any]] = []
+    all_scores: List[int] = []
+
+    async def crawl_one_university(uni: Dict[str, str]) -> Dict[str, Any]:
+        try:
+            pages = await asyncio.wait_for(
+                _crawl_university_funding_impl(
+                    domain_url=uni["domain"],
+                    user_query=user_query,
+                    precomputed_keywords=extracted_keywords,
+                    max_pages=effective_max_pages,
+                    max_results=effective_max_results_per_university,
+                    min_relevance_score=min_relevance_score,
+                ),
+                timeout=35,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"⏱️  Crawl timed out for {uni['domain']} - returning partial empty result")
+            pages = []
+
+        funding_pages = []
+        for page in pages:
+            score = int(page.get("relevance_score", 0) or 0)
+            all_scores.append(score)
+            funding_pages.append(
+                {
+                    "url": page.get("url", ""),
+                    "title": page.get("title", "No title"),
+                    "preview": page.get("preview", page.get("text", "")),
+                    "relevance_score": score,
+                    "text": page.get("text", page.get("preview", "")),
+                    "full_text": page.get("full_text", ""),
+                    "page_type": page.get("page_type", "funding_page"),
+                }
+            )
+
+        return {
+            "school": uni["school"],
+            "domain": uni["domain"],
+            "funding_pages": funding_pages,
+            "summary": f"Found {len(funding_pages)} relevant funding page(s).",
+        }
+
+    crawl_tasks = [crawl_one_university(uni) for uni in normalized_universities]
+    if crawl_tasks:
+        crawler_universities = await asyncio.gather(*crawl_tasks)
+
+    relevance_tiers = {
+        "exceptional": sum(1 for s in all_scores if s >= 100),
+        "high": sum(1 for s in all_scores if 50 <= s < 100),
+        "moderate": sum(1 for s in all_scores if 5 <= s < 50),
+    }
+
+    return {
+        "universities": crawler_universities,
+        "search_strategy": "query-guided crawl with keyword extraction" if user_query else "domain crawl without query keywords",
+        "total_funding_pages": sum(len(u["funding_pages"]) for u in crawler_universities),
+        "keyword_analysis": {
+            "user_query": user_query or "",
+            "keywords": extracted_keywords,
+            "keyword_count": len(extracted_keywords),
+        },
+        "relevance_tiers": relevance_tiers,
+    }
+
+
+@function_tool
+async def crawl_university_funding(
+    domain_url: str,
+    user_query: Optional[str] = None,
+    max_pages: int = 100,
+    max_results: int = 40,
+    min_relevance_score: int = 5,
+) -> List[Dict[str, object]]:
+    """Tool wrapper for single-university crawl."""
+    return await _crawl_university_funding_impl(
+        domain_url=domain_url,
+        user_query=user_query,
+        precomputed_keywords=None,
+        max_pages=max_pages,
+        max_results=max_results,
+        min_relevance_score=min_relevance_score,
+    )
