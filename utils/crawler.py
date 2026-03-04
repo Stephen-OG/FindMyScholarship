@@ -145,6 +145,19 @@ def normalize_url(url: str) -> str:
     return normalized
 
 
+def get_base_domain(url: str) -> str:
+    """
+    Extract base domain (netloc) from URL for caching purposes.
+    This ensures all URLs from the same domain share the same cache.
+    """
+    parsed = urlparse(url)
+    base = parsed.netloc.lower().replace(':80', '').replace(':443', '')
+    # Remove 'www.' prefix for consistency (www.example.com = example.com)
+    if base.startswith('www.'):
+        base = base[4:]
+    return base
+
+
 def extract_links(html: str, base_url: str) -> List[str]:
     """Extract all internal links from HTML"""
     soup = BeautifulSoup(html, "lxml")
@@ -220,13 +233,14 @@ async def crawl_university_funding(
     This function caches results per domain to prevent duplicate crawling.
     If the same domain is requested again, returns cached results.
     """
-    # Normalize domain URL for cache key
-    normalized_domain = normalize_url(domain_url)
-    cache_key = f"{normalized_domain}:{user_query or ''}"
+    # Use base domain for cache key (not full URL path) so all URLs from same domain share cache
+    base_domain = get_base_domain(domain_url)
+    cache_key = f"{base_domain}:{user_query or ''}"
     
     # Check cache first
     if cache_key in _crawled_domains_cache:
-        logger.info(f"♻️  Using cached results for {domain_url} (already crawled)")
+        logger.warning(f"⚠️  DUPLICATE CRAWL ATTEMPT: {domain_url} (domain {base_domain} already crawled - using cache)")
+        logger.info(f"♻️  Using cached results for {domain_url} (domain {base_domain} already crawled)")
         return _crawled_domains_cache[cache_key]
     
     custom_keywords = []
