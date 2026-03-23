@@ -1,184 +1,9 @@
-# # scholarship_agents/schorlarship_agent.py
-# """
-# Main orchestrator agent for FindMyScholarship
-# Updated to pass user query to crawler for keyword extraction
-# """
-
-# from agents import Agent, Runner
-
-# from scholarship_agents.analyzer_agent import analyzer_agent
-# from scholarship_agents.crawler_agent import crawler_agent
-# from scholarship_agents.school_domain_agent import search_agent
-
-# #Convert sub-agents to tools
-# search_agent_tool = search_agent.as_tool(
-#     tool_name="university_domain_search",
-#     tool_description="Find university domains for given schools or research topics. Returns school names, user's query and their official domains.",
-# )
-
-
-# crawler_agent_tool = crawler_agent.as_tool(
-#     tool_name="crawl_universities",
-#     tool_description="""Crawl a single university website to discover funding opportunities with intelligent keyword extraction.
-    
-#     CRITICAL: Always provide BOTH parameters:
-#     1. university_domain: The domain to crawl (e.g., "https://mit.edu")
-#     2. user_query: The user's original search query for keyword extraction
-    
-#     The crawler will:
-#     - Extract relevant keywords from the query (degree level, field of study, location, etc.)
-#     - Prioritize pages containing those keywords
-#     - Score results by relevance to the query
-#     - Return structured funding opportunities with URLs, titles, and previews
-    
-#     Example usage:
-#     crawl_universities(
-#         university_domain="https://mit.edu",
-#         user_query="PhD funding in machine learning for international students"
-#     )
-    
-#     Call this tool separately for each university you want to search.
-    
-#     Returns: Funding pages found at that specific university, sorted by relevance score.
-#     """,
-# )
-
-# analyzer_agent_tool = analyzer_agent.as_tool(
-#     tool_name="analyze_funding_pages",
-#     tool_description="""Analyze crawled funding pages to extract structured information.
-    
-#     Takes raw page data from crawler and extracts:
-#     - Specific scholarship/funding names
-#     - Degree levels, fields, eligibility
-#     - Funding amounts and deadlines
-#     - Application process
-#     - Relevance to user's query
-    
-#     Call this AFTER crawling to get detailed, structured funding information.
-    
-#     Example: analyze_funding_pages(crawler_results=..., user_query="PhD in biology")
-#     """,
-# )
-
-# tools = [search_agent_tool, crawler_agent_tool, analyzer_agent_tool]
-
-# system_prompt = """
-# You are FindMyScholarship AI - an intelligent assistant that helps students discover funding opportunities.
-
-# APP WORKFLOW (3-STAGE PIPELINE):
-# 1. FIND DOMAINS: Use university_domain_search to get university websites
-#    - If user mentions specific universities, find only those
-#    - If user describes a topic, search for relevant universities
-
-# 2. CRAWL PAGES: Use crawl_universities to find funding pages
-#    - Always pass the user's original query
-#    - Crawl MAX 3-4 universities per call
-#    - This returns RAW page data (URLs, titles, text snippets)
-
-# 3. ANALYZE CONTENT: Use analyze_funding_pages to extract structured details
-#    - Pass the crawler results AND user query
-#    - This extracts specific scholarship names, amounts, deadlines, eligibility
-#    - Returns organized, detailed funding information
-
-# 4. PRESENT RESULTS: Show findings in a clear, helpful format
-
-# CONTEXT MANAGEMENT:
-# - Break large requests into batches (max 3-4 universities per crawl call)
-# - Always analyze the crawled results to get structured details
-# - The analyzer extracts specific information you can present clearly
-
-# RESPONSE FORMAT:
-# Present results by university with:
-# - University name and relevant funding pages
-# - Specific scholarship/funding names with details:
-#   * Degree level (PhD, Masters, etc.)
-#   * Funding amount (be specific: "£18,000/year" not just "funding")
-#   * Eligibility requirements
-#   * Deadlines (if available)
-#   * Link to apply
-# - Highlight the most relevant opportunities first
-# - Be encouraging and specific
-
-# EXAMPLE FLOW:
-# User: "PhD funding in computer science at MIT and Stanford"
-
-# 1. Search: university_domain_search("MIT", "Stanford")
-#    → Returns: ["https://mit.edu", "https://stanford.edu"]
-
-# 2. Crawl: crawl_universities(domains=[...], user_query="PhD funding in computer science at MIT and Stanford")
-#    → Returns: List of funding pages with URLs and text
-
-# 3. Analyze: analyze_funding_pages(crawler_results=..., user_query="PhD funding in computer science")
-#    → Returns: Structured details (names, amounts, deadlines, etc.)
-
-# 4. Present: Show specific opportunities with all relevant details
-
-# ALWAYS USE ALL THREE STAGES for complete results!
-# """
-
-
-# # Create main orchestrator agent
-# scholarship_agent = Agent(
-#     name="Scholarship Researcher",
-#     instructions=system_prompt,
-#     tools=tools,
-#     model="gpt-4o-mini",
-# )
-
-
-# async def chat(message, history):
-#     """
-#     Handles user input and previous chat history for FindMyScholarship AI.
-#     Compatible with Gradio list or dict chat history formats.
-#     """
-#     messages = [{"role": "system", "content": system_prompt}]
-
-#     # Process history
-#     for turn in history:
-#         # If turn is a list/tuple (older Gradio format)
-#         if isinstance(turn, (list, tuple)) and len(turn) >= 2:
-#             user_msg = turn[0]
-#             ai_msg = turn[1]
-
-#         # If turn is a dict (newer Gradio format)
-#         elif isinstance(turn, dict):
-#             if turn.get("role") == "user":
-#                 user_msg = turn.get("content") or turn.get("message")
-#                 ai_msg = None
-#             elif turn.get("role") == "assistant":
-#                 user_msg = None
-#                 ai_msg = turn.get("content") or turn.get("message")
-#             else:
-#                 continue
-#         else:
-#             continue
-
-#         if user_msg:
-#             messages.append({"role": "user", "content": user_msg})
-#         if ai_msg:
-#             messages.append({"role": "assistant", "content": ai_msg})
-
-#     # Append latest user message
-#     messages.append({"role": "user", "content": message})
-
-#     # Run the agent
-#     response = await Runner.run(scholarship_agent, messages)
-#     return response.final_output
-
-
-
-
-
-
-
-
-
 import asyncio
 
 from agents import Agent, Runner
 
 from scholarship_agents.school_domain_agent import search_agent
-from utils.analyzer import analyze_funding_pages_batch
+from utils.analyzer import analyze_crawler_results
 from utils.crawler import crawl_universities_formatted
 from utils.logger import logger
 
@@ -190,7 +15,7 @@ search_agent_tool = search_agent.as_tool(
     max_turns=2,
 )
 
-tools = [search_agent_tool, crawl_universities_formatted, analyze_funding_pages_batch]
+tools = [search_agent_tool, crawl_universities_formatted, analyze_crawler_results]
 
 system_prompt = """
 You are FindMyScholarship AI - an intelligent assistant that helps students discover funding opportunities.
@@ -206,12 +31,12 @@ APP WORKFLOW (EXECUTE ONCE, THEN STOP):
    - CRITICAL: Call crawl_universities_formatted ONCE per batch of universities (max 3-4 per call)
    - CRITICAL: Always pass the user's original query to the tool for keyword extraction
    - If you have many universities, make MULTIPLE separate crawl_universities_formatted calls (one per batch)
-   - Each university returns up to 40 pages ranked by relevance (scores 5-100+)
+   - Each university can return up to 40 crawled pages from a crawl budget of up to 40 visited pages
    - Example: For 6 universities, make 2 Crawler calls: First 3, then next 3
    - STOP CRAWLING once all universities have been crawled
-4. ANALYZE CONTENT: Use analyze_funding_pages_batch ONCE with all crawled results
-   - Pass ALL crawler results from step 3 AND user query
-   - Analyze ONLY pages with score > 50
+4. ANALYZE CONTENT: Use analyze_crawler_results ONCE with all crawled results
+   - Pass the `universities` list from the crawler output in step 3 AND the user query
+   - The tool will internally analyze the returned crawler pages and return a valid AnalyzerResult object
    - This extracts specific scholarship names, amounts, deadlines, eligibility
    - Returns organized, detailed funding information
 5. PRESENT RESULTS: Format and present the analyzed results to the user
@@ -223,7 +48,7 @@ APP WORKFLOW (EXECUTE ONCE, THEN STOP):
 CRITICAL STOPPING RULES:
 - After step 2: DO NOT call university_domain_search again
 - After step 3: DO NOT call crawl_universities_formatted again - you already have all results
-- After step 4: DO NOT call analyze_funding_pages_batch again - analysis is complete
+- After step 4: DO NOT call analyze_crawler_results again - analysis is complete
 - After step 5: STOP and present results - workflow is complete
 - If runtime is getting long, return partial findings from completed universities instead of starting new crawling/analysis cycles
 
@@ -232,8 +57,7 @@ CONTEXT MANAGEMENT:
 - DO NOT crawl more than 3-4 universities in a single crawl_universities_formatted call
 - For broad queries without explicit university names, do not exceed 5 universities total
 - For many universities, use multiple sequential Crawler calls, then STOP
-- Only analyze pages with relevance scores > 50
-- Ignore any page ≤ 50 relevance
+- The analyzer tool decides how to batch and filter page analysis internally
 
 TYPES OF FUNDING YOU CAN FIND:
 - PhD scholarships and studentships
@@ -252,6 +76,9 @@ RESPONSE GUIDELINES:
 - Provide context from page previews
 - Be encouraging and helpful in tone
 - If few results found, suggest alternative searches
+- If the analyzer reports zero opportunities, clearly say no relevant funding opportunities were found
+- When zero opportunities are found, DO NOT present generic research/study/program pages as scholarship findings
+- When zero opportunities are found, suggestions must be framed as next steps, not as discovered results
 
 EXAMPLE FLOW (EXECUTE ONCE, THEN STOP):
 User: "PhD funding in machine learning at MIT, Stanford, Berkeley, CMU, and Harvard"
@@ -259,13 +86,13 @@ User: "PhD funding in machine learning at MIT, Stanford, Berkeley, CMU, and Harv
 Step 1: Call university_domain_search ONCE → Returns 5 universities
 Step 2: Call crawl_universities_formatted with first 3 universities → Returns pages
 Step 3: Call crawl_universities_formatted with remaining 2 universities → Returns pages
-Step 4: Call analyze_funding_pages_batch ONCE with ALL results from steps 2-3 → Returns analyzed data
+Step 4: Call analyze_crawler_results ONCE with ALL results from steps 2-3 → Returns analyzed data
 Step 5: Present results to user → STOP (workflow complete)
 
 DO NOT:
 - Call university_domain_search again after step 1
 - Call crawl_universities_formatted again after step 3 (you already have all pages)
-- Call analyze_funding_pages_batch again after step 4 (analysis is done)
+- Call analyze_crawler_results again after step 4 (analysis is done)
 - Loop back to any previous step
 
 REMEMBER: Execute each step ONCE, then move to the next. After presenting results, STOP.
@@ -291,8 +118,15 @@ async def chat(message, history):
 
         # If turn is a dict (newer Gradio format)
         elif isinstance(turn, dict):
-            user_msg = turn.get("user") or turn.get("message") if turn.get("role") == "user" else None
-            ai_msg = turn.get("assistant") or turn.get("message") if turn.get("role") == "assistant" else None
+            if turn.get("role") == "user":
+                user_msg = turn.get("user") or turn.get("content") or turn.get("message")
+                ai_msg = None
+            elif turn.get("role") == "assistant":
+                user_msg = None
+                ai_msg = turn.get("assistant") or turn.get("content") or turn.get("message")
+            else:
+                user_msg = None
+                ai_msg = None
 
         else:
             continue  # skip malformed turns
@@ -308,12 +142,12 @@ async def chat(message, history):
     # Run the agent with hard limits so UI does not appear stuck on tool loops.
     try:
         response = await asyncio.wait_for(
-            Runner.run(scholarship_agent, messages, max_turns=6),
-            timeout=180,
+            Runner.run(scholarship_agent, messages, max_turns=8),
+            timeout=300,
         )
         return response.final_output
     except asyncio.TimeoutError:
-        logger.error("Scholarship agent timed out after 180 seconds")
+        logger.error("Scholarship agent timed out after 300 seconds")
         return (
             "The search timed out before completion. "
             "Please try a narrower query (fewer universities or a more specific field)."
@@ -321,6 +155,6 @@ async def chat(message, history):
     except Exception as e:
         logger.error(f"Scholarship agent failed: {e}")
         return (
-            "The request was too large for the current model context window. "
-            "Please retry with fewer universities or a narrower query."
+            "The search hit an internal processing error. "
+            "Please retry, and if it persists, try a narrower query."
         )
