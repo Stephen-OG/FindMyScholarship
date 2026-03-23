@@ -4,8 +4,9 @@
 # ===============================
 
 # Environment
-PYTHON = uv run python
-GRADIO = uv run gradio
+UV_RUN = uv run --active
+PYTHON = $(UV_RUN) python
+GRADIO = $(UV_RUN) gradio
 VENV = .venv
 APP = app.py
 
@@ -44,11 +45,11 @@ run: ## Run main app
 
 dev: ## Start development mode (auto-reload + lint check)
 	@echo "🔧 Fixing lintable issues with Ruff..."
-	uv run ruff check . --fix || true
-	@echo "🖋️ Formatting code with Black..."
-	uv run black . || true
+	$(UV_RUN) ruff check . --fix || true
+	@echo "🖋️ Formatting code with Ruff..."
+	$(UV_RUN) ruff format . || true
 	@echo "🚀 Launching Gradio in development mode with auto-reload..."
-	uv run gradio $(APP) 
+	$(UV_RUN) gradio $(APP)
 
 gradio: ## Launch Gradio app interface
 	@echo "🌐 Launching Gradio UI..."
@@ -63,15 +64,15 @@ shell: ## Enter uv-managed shell
 
 test: ## Run pytest suite
 	@echo "🧪 Running tests..."
-	uv run pytest -v
+	$(UV_RUN) pytest -v
 
 lint: ## Run Ruff linter and auto-fix
 	@echo "✨ Linting with Ruff..."
-	uv run ruff check --fix .
+	$(UV_RUN) ruff check --fix .
 
 format: ## Format code with Black
-	@echo "🖋️  Formatting with Black..."
-	uv run black .
+	@echo "🖋️  Formatting with Ruff..."
+	$(UV_RUN) ruff format .
 
 check: lint format ## Run linting and formatting together
 

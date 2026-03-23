@@ -5,7 +5,14 @@ from urllib.parse import urlparse
 
 from agents import function_tool
 from dotenv import load_dotenv
-from serpapi.google_search import GoogleSearch
+
+try:
+    from serpapi import GoogleSearch  # type: ignore
+except Exception:  # pragma: no cover - compatibility fallback for older package layouts
+    try:
+        from serpapi.google_search import GoogleSearch  # type: ignore
+    except Exception:  # pragma: no cover - keep startup resilient when SerpAPI is misinstalled
+        GoogleSearch = None
 
 from utils.logger import logger
 
@@ -15,14 +22,35 @@ SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
 _domain_search_cache: dict[str, List[str]] = {}
 
 _SCHOOL_STOPWORDS = {
-    "of", "the", "and", "for", "at", "in", "on",
-    "university", "college", "institute", "school",
+    "of",
+    "the",
+    "and",
+    "for",
+    "at",
+    "in",
+    "on",
+    "university",
+    "college",
+    "institute",
+    "school",
 }
 _NON_UNIVERSITY_HINTS = {
-    "research", "institute", "company", "corp", "inc", "foundation", "ngo",
+    "research",
+    "institute",
+    "company",
+    "corp",
+    "inc",
+    "foundation",
+    "ngo",
 }
 _UNIVERSITY_HINTS = {
-    "university", "univ", "college", "faculty", "campus", "edu", ".ac.",
+    "university",
+    "univ",
+    "college",
+    "faculty",
+    "campus",
+    "edu",
+    ".ac.",
 }
 
 
@@ -31,6 +59,15 @@ def _normalize_netloc(url: str) -> str:
     if netloc.startswith("www."):
         netloc = netloc[4:]
     return netloc
+
+
+def _domain_scope(netloc: str) -> str:
+    parts = netloc.split(".")
+    if len(parts) <= 2:
+        return netloc
+    if parts[-2:] == ["ac", "uk"] and len(parts) >= 3:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
 
 
 def _school_tokens(school: str) -> List[str]:
@@ -59,7 +96,13 @@ def _is_probable_university_domain(netloc: str, school_tokens: List[str]) -> boo
 @function_tool
 def find_university_domain(school: str, country: Optional[str] = None) -> List[str]:
     """Find university domains using SerpAPI"""
-    num:int = 5
+    num: int = 5
+    if GoogleSearch is None:
+        logger.error(
+            "SerpAPI GoogleSearch import is unavailable. Install the supported SerpAPI client package."
+        )
+        return []
+
     school_clean = (school or "").strip()
     if len(school_clean) < 2:
         logger.info("Skipping domain lookup for empty/invalid school name")
@@ -97,27 +140,37 @@ def find_university_domain(school: str, country: Optional[str] = None) -> List[s
         if not netloc:
             continue
         if _is_probable_university_domain(netloc, school_tokens):
-            base = f"https://{netloc}"
-            if base not in seen:
-                cleaned.append(base)
-                seen.add(base)
-    
+            scope = _domain_scope(netloc)
+            for candidate in (scope, netloc):
+                base = f"https://{candidate}"
+                if base not in seen:
+                    cleaned.append(base)
+                    seen.add(base)
+
     # If no results, fall back to more permissive check
     if not cleaned:
         for u in urls:
             netloc = _normalize_netloc(u)
             if not netloc:
                 continue
-            if "univ" in netloc or ".edu" in netloc or ".ac." in netloc or any(token in netloc for token in school_tokens):
-                base = f"https://{netloc}"
-                if base not in seen:
-                    cleaned.append(base)
-                    seen.add(base)
-                    
+            if (
+                "univ" in netloc
+                or ".edu" in netloc
+                or ".ac." in netloc
+                or any(token in netloc for token in school_tokens)
+            ):
+                scope = _domain_scope(netloc)
+                for candidate in (scope, netloc):
+                    base = f"https://{candidate}"
+                    if base not in seen:
+                        cleaned.append(base)
+                        seen.add(base)
+
     logger.info(f"Cleaned domains: {cleaned}")
     _domain_search_cache[cache_key] = cleaned[:num]
     return cleaned[:num]
-    
+
+
 # def find_university_domain(school: str, country: Optional[str] = None, num: int = 5) -> List[str]:
 #     """
 #     Find likely university domains for any school in any country using SerpAPI.

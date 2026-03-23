@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+import re
 from typing import Any, Dict, List
 
 import aiohttp
@@ -7,7 +9,10 @@ from agents import function_tool
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 
+from models.crawler_model import UniversityResult
+from utils.crawler import get_cached_crawl_payload
 from utils.logger import logger
 
 load_dotenv(override=True)
@@ -16,67 +21,96 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Maximum pages to analyze in a single batch (to stay within token limits)
 MAX_PAGES_PER_BATCH = 5
+MAX_CONCURRENT_ANALYSIS_BATCHES = 3
 
-@function_tool
-async def analyze_funding_page(
-    url: str, 
-    title: str, 
-    preview: str, 
-    user_query: str,
-    full_text: str = None
+
+def sanitize_text_for_llm(value: str) -> str:
+    """Remove control characters that can break prompt construction or API requests."""
+    cleaned = value or ""
+    cleaned = cleaned.replace("\x00", " ")
+    cleaned = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    return cleaned.strip()
+
+
+class AnalyzedFundingPagePayload(BaseModel):
+    url: str
+    title: str
+    opportunities: List[Dict[str, Any]]
+    page_summary: str
+    relevance_to_query: str
+
+
+class UniversityFundingAnalysisPayload(BaseModel):
+    university: str
+    domain: str
+    analyzed_pages: List[AnalyzedFundingPagePayload]
+    total_opportunities: int
+    summary: str
+    best_matches: List[str]
+
+
+class AnalyzerResultPayload(BaseModel):
+    universities: List[UniversityFundingAnalysisPayload]
+    overall_summary: str
+    total_opportunities_found: int
+
+
+async def _analyze_funding_page_impl(
+    url: str, title: str, preview: str, user_query: str, full_text: str = None
 ) -> dict:
     """
     Analyze a funding page to extract structured information.
-    
+
     CRITICAL: Always provide full_text parameter from crawler results to avoid refetching the URL.
     The crawler already fetches and cleans the page content, so passing full_text is much faster.
-    
+
     Args:
         url: Page URL
         title: Page title
         preview: Short preview of page content (for display)
         user_query: User's original query for context
         full_text: REQUIRED - Full page text content from crawler results (avoids refetching URL)
-    
+
     Returns:
         Structured funding information with opportunities, eligibility, amounts, deadlines, etc.
     """
-    
+
     logger.info(f"📄 Analyzing: {url}")
-    
+
     # Use provided full_text if available, otherwise fetch (fallback for backward compatibility)
     if full_text is None or full_text == "":
         logger.warning(f"⚠️  No full_text provided for {url}, refetching (inefficient)")
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.get(
-                    url, 
-                    headers={"User-Agent": "FundingScraper/1.0"},
-                    timeout=15
+                    url, headers={"User-Agent": "FundingScraper/1.0"}, timeout=15
                 ) as response:
                     if response.status == 200:
                         html = await response.text()
                         soup = BeautifulSoup(html, "lxml")
-                        
+
                         # Remove scripts and styles
                         for element in soup(["script", "style", "nav", "footer", "header"]):
                             element.decompose()
-                        
+
                         # Get main content
                         full_text = soup.get_text(separator="\n", strip=True)
                         # Limit to reasonable size (10k chars = ~2500 tokens)
-                        full_text = full_text[:10000]
+                        full_text = sanitize_text_for_llm(full_text[:10000])
                     else:
                         logger.warning(f"⚠️  Failed to fetch {url}, using preview only")
-                        full_text = preview
+                        full_text = sanitize_text_for_llm(preview)
             except Exception as e:
                 logger.error(f"⚠️  Error fetching {url}: {e}, using preview only")
-                full_text = preview
+                full_text = sanitize_text_for_llm(preview)
     else:
         # Crawler already provides cleaned text, so use it directly
         # Just ensure it's within token budget (already limited in crawler, but double-check)
-        full_text = full_text[:10000] if len(full_text) > 10000 else full_text
-    
+        full_text = sanitize_text_for_llm(
+            full_text[:10000] if len(full_text) > 10000 else full_text
+        )
+
     analysis_prompt = f"""Analyze this university funding page and extract key information.
 
 USER'S QUERY: {user_query}
@@ -153,22 +187,18 @@ Return as JSON with this structure:
         messages=[
             {
                 "role": "system",
-                "content": "You are a funding information extraction expert. Extract ONLY real, explicitly mentioned funding opportunities from scholarship pages. DO NOT invent, infer, or fabricate funding opportunities. Only extract what is explicitly stated in the page content."
+                "content": "You are a funding information extraction expert. Extract ONLY real, explicitly mentioned funding opportunities from scholarship pages. DO NOT invent, infer, or fabricate funding opportunities. Only extract what is explicitly stated in the page content.",
             },
-            {
-                "role": "user",
-                "content": analysis_prompt
-            }
+            {"role": "user", "content": analysis_prompt},
         ],
         response_format={"type": "json_object"},
-        temperature=0.3
+        temperature=0.3,
     )
-    
+
     return json.loads(response.choices[0].message.content)
 
 
-@function_tool
-async def analyze_funding_pages_batch(
+async def _analyze_funding_pages_batch_impl(
     urls: List[str],
     titles: List[str],
     previews: List[str],
@@ -178,12 +208,12 @@ async def analyze_funding_pages_batch(
 ) -> List[Dict[str, Any]]:
     """
     Analyze multiple funding pages in batches to reduce API calls.
-    
+
     This function processes multiple pages in a single API call, dramatically reducing
     the number of API calls from N (one per page) to N/max_pages_per_batch.
-    
+
     CRITICAL: Always provide full_text for each page from crawler results to avoid refetching.
-    
+
     Args:
         urls: List of page URLs
         titles: List of page titles (same order as urls)
@@ -191,7 +221,7 @@ async def analyze_funding_pages_batch(
         full_texts: List of full page texts from crawler (same order as urls)
         user_query: User's original query for context
         max_pages_per_batch: Maximum pages to analyze per API call (default: 5)
-    
+
     Returns:
         List of analysis results, one per page, each containing:
         {
@@ -201,7 +231,7 @@ async def analyze_funding_pages_batch(
             "relevance_to_query": str
         }
     """
-    
+
     # Build internal page objects from parallel lists
     if not urls:
         logger.warning("No URLs provided to analyze_funding_pages_batch")
@@ -212,44 +242,36 @@ async def analyze_funding_pages_batch(
     for i in range(n):
         url = urls[i]
         title = titles[i] if i < len(titles) else ""
-        preview = previews[i] if i < len(previews) else ""
-        full_text = full_texts[i] if i < len(full_texts) else ""
+        preview = sanitize_text_for_llm(previews[i] if i < len(previews) else "")
+        full_text = sanitize_text_for_llm(full_texts[i] if i < len(full_texts) else "")
         pages.append(
             {
                 "url": url,
-                "title": title,
+                "title": sanitize_text_for_llm(title),
                 "preview": preview,
                 "full_text": full_text,
             }
         )
-    
+
     logger.info(f"📦 Batch analyzing {len(pages)} pages in batches of {max_pages_per_batch}")
-    
-    all_results = []
-    
-    # Process pages in batches
-    for batch_start in range(0, len(pages), max_pages_per_batch):
-        batch = pages[batch_start:batch_start + max_pages_per_batch]
-        batch_num = (batch_start // max_pages_per_batch) + 1
-        total_batches = (len(pages) + max_pages_per_batch - 1) // max_pages_per_batch
-        
+
+    async def analyze_batch(
+        batch: List[Dict[str, Any]], batch_num: int, total_batches: int
+    ) -> List[Dict[str, Any]]:
         logger.info(f"📦 Processing batch {batch_num}/{total_batches} ({len(batch)} pages)")
-        
-        # Build batch prompt
+
         pages_text = []
         for i, page in enumerate(batch, 1):
             url = page.get("url", "Unknown URL")
-            title = page.get("title", "No title")
-            full_text = page.get("full_text", "")
-            
+            title = sanitize_text_for_llm(page.get("title", "No title"))
+            full_text = sanitize_text_for_llm(page.get("full_text", ""))
+
             if not full_text:
                 logger.warning(f"⚠️  Page {i} ({url}) missing full_text, skipping from batch")
                 continue
-            
-            # Limit each page's text to stay within token budget
-            # With 5 pages, ~2000 chars per page = ~10k total = ~2500 tokens
+
             page_text = full_text[:2000] if len(full_text) > 2000 else full_text
-            
+
             pages_text.append(f"""
 --- PAGE {i} ---
 URL: {url}
@@ -257,17 +279,17 @@ Title: {title}
 Content:
 {page_text}
 """)
-        
+
         if not pages_text:
             logger.warning("No valid pages in batch (all missing full_text)")
-            continue
-        
+            return []
+
         batch_prompt = f"""Analyze these university funding pages and extract key information for EACH page.
 
 USER'S QUERY: {user_query}
 
 PAGES TO ANALYZE:
-{''.join(pages_text)}
+{"".join(pages_text)}
 
 CRITICAL RULES (STRICT):
 1. ONLY extract funding opportunities that are explicitly present in the provided page content.
@@ -342,60 +364,302 @@ Return as JSON with this structure:
 }}
 
 IMPORTANT: Return results for ALL {len(batch)} pages in the order they were provided."""
-        
+
         try:
             response = await client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a funding information extraction expert. Extract ONLY real, explicitly mentioned funding opportunities from scholarship pages. DO NOT invent, infer, or fabricate funding opportunities. Only extract what is explicitly stated in the page content. If no funding is found, return empty opportunities array."
+                        "content": "You are a funding information extraction expert. Extract ONLY real, explicitly mentioned funding opportunities from scholarship pages. DO NOT invent, infer, or fabricate funding opportunities. Only extract what is explicitly stated in the page content. If no funding is found, return empty opportunities array.",
                     },
-                    {
-                        "role": "user",
-                        "content": batch_prompt
-                    }
+                    {"role": "user", "content": batch_prompt},
                 ],
                 response_format={"type": "json_object"},
-                temperature=0.3
+                temperature=0.3,
             )
-            
+
             result = json.loads(response.choices[0].message.content)
-            
+
             # Extract results for each page
             batch_results = result.get("pages", [])
-            
+            normalized_batch_results: List[Dict[str, Any]] = []
+
             # Ensure we have results for all pages (handle cases where LLM might skip some)
             for i, page in enumerate(batch):
                 url = page.get("url", "Unknown")
                 # Find matching result by URL
-                page_result = next(
-                    (r for r in batch_results if r.get("url") == url),
-                    None
-                )
-                
+                page_result = next((r for r in batch_results if r.get("url") == url), None)
+
                 if page_result:
-                    all_results.append(page_result)
+                    normalized_batch_results.append(page_result)
                 else:
                     # Fallback: create empty result if LLM didn't return it
                     logger.warning(f"⚠️  No result returned for {url}, creating placeholder")
-                    all_results.append({
-                        "url": url,
-                        "opportunities": [],
-                        "page_summary": "Analysis incomplete",
-                        "relevance_to_query": "Unknown"
-                    })
-            
+                    normalized_batch_results.append(
+                        {
+                            "url": url,
+                            "opportunities": [],
+                            "page_summary": "Analysis incomplete",
+                            "relevance_to_query": "Unknown",
+                        }
+                    )
+
         except Exception as e:
             logger.error(f"❌ Error analyzing batch {batch_num}: {e}")
             # Create placeholder results for failed batch
+            normalized_batch_results = []
             for page in batch:
-                all_results.append({
-                    "url": page.get("url", "Unknown"),
-                    "opportunities": [],
-                    "page_summary": f"Analysis failed: {str(e)}",
-                    "relevance_to_query": "Unknown"
-                })
-    
+                normalized_batch_results.append(
+                    {
+                        "url": page.get("url", "Unknown"),
+                        "opportunities": [],
+                        "page_summary": f"Analysis failed: {str(e)}",
+                        "relevance_to_query": "Unknown",
+                    }
+                )
+
+        return normalized_batch_results
+
+    total_batches = (len(pages) + max_pages_per_batch - 1) // max_pages_per_batch
+    batches = [
+        pages[batch_start : batch_start + max_pages_per_batch]
+        for batch_start in range(0, len(pages), max_pages_per_batch)
+    ]
+
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_ANALYSIS_BATCHES)
+
+    async def analyze_batch_with_limit(
+        batch: List[Dict[str, Any]], batch_num: int
+    ) -> List[Dict[str, Any]]:
+        async with semaphore:
+            return await analyze_batch(batch, batch_num, total_batches)
+
+    batch_results = await asyncio.gather(
+        *[
+            analyze_batch_with_limit(batch, batch_num)
+            for batch_num, batch in enumerate(batches, start=1)
+        ]
+    )
+
+    all_results = [result for batch in batch_results for result in batch]
+
     logger.info(f"✅ Batch analysis complete: {len(all_results)} pages analyzed")
     return all_results
+
+
+def _build_university_summary(
+    university: str, analyzed_pages: List[Dict[str, Any]], total_opportunities: int
+) -> str:
+    if total_opportunities == 0:
+        return (
+            f"No relevant funding opportunities were found for {university} in the analyzed pages."
+        )
+    if not analyzed_pages:
+        return f"No funding pages were analyzed for {university}."
+    relevant_pages = sum(1 for page in analyzed_pages if page.get("opportunities"))
+    return (
+        f"Found {total_opportunities} relevant funding opportunit"
+        f"{'y' if total_opportunities == 1 else 'ies'} across {relevant_pages} page(s) for {university}."
+    )
+
+
+def _collect_best_matches(analyzed_pages: List[Dict[str, Any]], limit: int = 3) -> List[str]:
+    best_matches: List[str] = []
+    seen: set[str] = set()
+    for page in analyzed_pages:
+        for opportunity in page.get("opportunities", []):
+            name = sanitize_text_for_llm(str(opportunity.get("name", "")))
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            best_matches.append(name)
+            if len(best_matches) >= limit:
+                return best_matches
+    return best_matches
+
+
+@function_tool
+async def analyze_crawler_results(
+    universities: List[UniversityResult],
+    user_query: str,
+    min_relevance_score: int = 5,
+) -> Dict[str, Any]:
+    """
+    Bridge crawler output into analyzer output.
+
+    This tool accepts the crawler's university/page payload and returns a structured
+    AnalyzerResult object, handling the flattening/grouping internally so the
+    orchestrator does not need to manually reshape tool outputs.
+    """
+    universities_payload = [
+        university.model_dump() if isinstance(university, UniversityResult) else university
+        for university in universities
+    ]
+
+    analyzed_universities: List[Dict[str, Any]] = []
+    total_opportunities_found = 0
+
+    for university in universities_payload:
+        university_name = sanitize_text_for_llm(str(university.get("school", "Unknown University")))
+        university_domain = sanitize_text_for_llm(str(university.get("domain", "")))
+        funding_pages = university.get("funding_pages", []) or []
+        candidate_pages = university.get("candidate_pages", []) or []
+        cached_crawl_payload = (
+            get_cached_crawl_payload(university_domain, user_query) if university_domain else {}
+        )
+        cached_funding_pages = cached_crawl_payload.get("funding_pages", []) or []
+        cached_candidate_pages = cached_crawl_payload.get("candidate_pages", []) or []
+
+        if len(cached_candidate_pages) > len(candidate_pages):
+            candidate_pages = cached_candidate_pages
+        if len(cached_funding_pages) > len(funding_pages):
+            funding_pages = cached_funding_pages
+        analysis_source_pages = candidate_pages or funding_pages or []
+
+        logger.info(
+            "🧪 Analyzer input for %s | funding_pages=%d | candidate_pages=%d | cached_funding_pages=%d | cached_candidate_pages=%d | using=%d",
+            university_name,
+            len(funding_pages),
+            len(candidate_pages),
+            len(cached_funding_pages),
+            len(cached_candidate_pages),
+            len(analysis_source_pages),
+        )
+
+        if candidate_pages:
+            eligible_pages = [
+                page
+                for page in candidate_pages
+                if sanitize_text_for_llm(str(page.get("full_text", "") or page.get("text", "")))
+            ]
+        else:
+            eligible_pages = [
+                page
+                for page in funding_pages
+                if int(page.get("relevance_score", 0) or 0) >= min_relevance_score
+            ]
+
+        logger.info(
+            "🧪 Analyzer eligible pages for %s | min_relevance_score=%d | eligible=%d | source=%s",
+            university_name,
+            min_relevance_score,
+            len(eligible_pages),
+            "candidate_pages" if candidate_pages else "funding_pages",
+        )
+
+        if eligible_pages:
+            analysis_results = await _analyze_funding_pages_batch_impl(
+                urls=[str(page.get("url", "")) for page in eligible_pages],
+                titles=[
+                    sanitize_text_for_llm(str(page.get("title", ""))) for page in eligible_pages
+                ],
+                previews=[
+                    sanitize_text_for_llm(str(page.get("preview", "") or page.get("text", "")))
+                    for page in eligible_pages
+                ],
+                full_texts=[
+                    sanitize_text_for_llm(str(page.get("full_text", "") or page.get("text", "")))
+                    for page in eligible_pages
+                ],
+                user_query=user_query,
+            )
+        else:
+            analysis_results = []
+
+        title_by_url = {
+            str(page.get("url", "")): sanitize_text_for_llm(str(page.get("title", "No title")))
+            for page in eligible_pages
+        }
+
+        analyzed_pages: List[Dict[str, Any]] = []
+        for result in analysis_results:
+            url = sanitize_text_for_llm(str(result.get("url", "")))
+            opportunities = result.get("opportunities", []) or []
+            if not opportunities:
+                continue
+            analyzed_pages.append(
+                {
+                    "url": url,
+                    "title": title_by_url.get(url, "No title"),
+                    "opportunities": opportunities,
+                    "page_summary": sanitize_text_for_llm(
+                        str(result.get("page_summary", "No summary available."))
+                    ),
+                    "relevance_to_query": sanitize_text_for_llm(
+                        str(result.get("relevance_to_query", "Unknown"))
+                    ),
+                }
+            )
+
+        total_opportunities = sum(len(page.get("opportunities", [])) for page in analyzed_pages)
+        total_opportunities_found += total_opportunities
+        best_matches = _collect_best_matches(analyzed_pages)
+
+        analyzed_universities.append(
+            {
+                "university": university_name,
+                "domain": university_domain,
+                "analyzed_pages": analyzed_pages,
+                "total_opportunities": total_opportunities,
+                "summary": _build_university_summary(
+                    university_name, analyzed_pages, total_opportunities
+                ),
+                "best_matches": best_matches,
+            }
+        )
+
+    if total_opportunities_found == 0:
+        overall_summary = (
+            "No relevant funding opportunities were found in the analyzed pages. "
+            "Try a narrower university page set or a broader funding query."
+        )
+    else:
+        overall_summary = (
+            f"Found {total_opportunities_found} relevant funding opportunit"
+            f"{'y' if total_opportunities_found == 1 else 'ies'} across "
+            f"{len(analyzed_universities)} universit"
+            f"{'y' if len(analyzed_universities) == 1 else 'ies'}."
+        )
+
+    result_payload = AnalyzerResultPayload(
+        universities=[
+            UniversityFundingAnalysisPayload.model_validate(university)
+            for university in analyzed_universities
+        ],
+        overall_summary=overall_summary,
+        total_opportunities_found=total_opportunities_found,
+    )
+    return result_payload.model_dump()
+
+
+@function_tool
+async def analyze_funding_page(
+    url: str, title: str, preview: str, user_query: str, full_text: str = None
+) -> dict:
+    return await _analyze_funding_page_impl(
+        url=url,
+        title=title,
+        preview=preview,
+        user_query=user_query,
+        full_text=full_text,
+    )
+
+
+@function_tool
+async def analyze_funding_pages_batch(
+    urls: List[str],
+    titles: List[str],
+    previews: List[str],
+    full_texts: List[str],
+    user_query: str,
+    max_pages_per_batch: int = MAX_PAGES_PER_BATCH,
+) -> List[Dict[str, Any]]:
+    return await _analyze_funding_pages_batch_impl(
+        urls=urls,
+        titles=titles,
+        previews=previews,
+        full_texts=full_texts,
+        user_query=user_query,
+        max_pages_per_batch=max_pages_per_batch,
+    )
