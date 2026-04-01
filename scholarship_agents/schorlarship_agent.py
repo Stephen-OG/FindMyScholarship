@@ -1,10 +1,11 @@
 import asyncio
+from typing import Any, AsyncIterator, Optional
 
-from agents import Agent, Runner
+from agents import Agent, RunHooks, Runner
 
 from scholarship_agents.school_domain_agent import search_agent
 from utils.analyzer import analyze_crawler_results
-from utils.crawler import crawl_universities_formatted
+from utils.crawl import crawl_universities_formatted
 from utils.logger import logger
 
 logger.info("Starting scholarship agent")
@@ -12,13 +13,19 @@ logger.info("Starting scholarship agent")
 search_agent_tool = search_agent.as_tool(
     tool_name="university_domain_search",
     tool_description="Find university domains for given schools or research topics. Call ONCE per query to get all relevant universities. Returns list of universities with their official domains.",
-    max_turns=2,
+    max_turns=5,
 )
 
 tools = [search_agent_tool, crawl_universities_formatted, analyze_crawler_results]
 
 system_prompt = """
 You are FindMyScholarship AI - an intelligent assistant that helps students discover funding opportunities.
+
+🔑 KEYWORD EXTRACTION OPTIMIZATION:
+- Keywords for this query have been pre-extracted by the system
+- When you call crawl_universities_formatted: PASS the extracted_keywords from the context message
+- When you call analyze_crawler_results: PASS the extracted_keywords from the context message
+- This optimization reduces redundant LLM calls and improves efficiency
 
 APP WORKFLOW (EXECUTE ONCE, THEN STOP):
 1. USER INPUT: Student describes what they're looking for (field of study, degree level, preferred universities, etc.)
@@ -30,12 +37,14 @@ APP WORKFLOW (EXECUTE ONCE, THEN STOP):
 3. SMART CRAWLING: Use crawl_universities_formatted to search university websites
    - CRITICAL: Call crawl_universities_formatted ONCE per batch of universities (max 3-4 per call)
    - CRITICAL: Always pass the user's original query to the tool for keyword extraction
+   - IMPORTANT: Pass extracted_keywords parameter (from context) to avoid re-extraction
    - If you have many universities, make MULTIPLE separate crawl_universities_formatted calls (one per batch)
    - Each university can return up to 40 crawled pages from a crawl budget of up to 40 visited pages
    - Example: For 6 universities, make 2 Crawler calls: First 3, then next 3
    - STOP CRAWLING once all universities have been crawled
 4. ANALYZE CONTENT: Use analyze_crawler_results ONCE with all crawled results
    - Pass the `universities` list from the crawler output in step 3 AND the user query
+   - IMPORTANT: Pass extracted_keywords parameter (from context) to avoid re-extraction
    - The tool will internally analyze the returned crawler pages and return a valid AnalyzerResult object
    - This extracts specific scholarship names, amounts, deadlines, eligibility
    - Returns organized, detailed funding information
@@ -84,9 +93,9 @@ EXAMPLE FLOW (EXECUTE ONCE, THEN STOP):
 User: "PhD funding in machine learning at MIT, Stanford, Berkeley, CMU, and Harvard"
 
 Step 1: Call university_domain_search ONCE → Returns 5 universities
-Step 2: Call crawl_universities_formatted with first 3 universities → Returns pages
-Step 3: Call crawl_universities_formatted with remaining 2 universities → Returns pages
-Step 4: Call analyze_crawler_results ONCE with ALL results from steps 2-3 → Returns analyzed data
+Step 2: Call crawl_universities_formatted with first 3 universities (pass extracted_keywords) → Returns pages
+Step 3: Call crawl_universities_formatted with remaining 2 universities (pass extracted_keywords) → Returns pages
+Step 4: Call analyze_crawler_results ONCE with ALL results from steps 2-3 (pass extracted_keywords) → Returns analyzed data
 Step 5: Present results to user → STOP (workflow complete)
 
 DO NOT:
@@ -102,47 +111,178 @@ scholarship_agent = Agent(
     name="Scholarship Researcher", instructions=system_prompt, tools=tools, model="gpt-4o-mini"
 )
 
+# Per-tool call limits enforced programmatically (not just via prompt).
+# university_domain_search: 2 — allows one retry if the first result is thin.
+# crawl_universities_formatted: 2 — supports batching across university groups.
+# analyze_crawler_results: 1 — analysis should never be repeated.
+_TOOL_MAX_CALLS: dict[str, int] = {
+    "university_domain_search": 2,
+    "crawl_universities_formatted": 2,
+    "analyze_crawler_results": 1,
+}
 
-async def chat(message, history):
+
+# Human-readable progress labels shown in the Gradio chat bubble while the
+# agent is running. Keys match the tool names registered above.
+_TOOL_PROGRESS: dict[str, str] = {
+    "university_domain_search": "Searching for university domains...",
+    "crawl_universities_formatted": "Crawling university websites for funding pages...",
+    "analyze_crawler_results": "Analysing funding pages with AI...",
+}
+_TOOL_DONE: dict[str, str] = {
+    "university_domain_search": "University domains found.",
+    "crawl_universities_formatted": "Crawl complete.",
+    "analyze_crawler_results": "Analysis complete.",
+}
+
+
+class ToolCallGuard(RunHooks):
     """
-    Handles user input and previous chat history for FindMyScholarship AI.
-    Compatible with Gradio list or dict chat history formats.
+    Enforces per-tool call limits AND streams progress messages into an
+    asyncio.Queue so the Gradio UI can display live status updates.
+
+    Pass a queue to enable streaming; omit it for non-streaming use.
     """
+
+    def __init__(self, progress_queue: Optional[asyncio.Queue] = None) -> None:
+        self._counts: dict[str, int] = {}
+        self._queue = progress_queue
+
+    async def _emit(self, message: str) -> None:
+        if self._queue is not None:
+            await self._queue.put(message)
+
+    async def on_tool_start(self, context: Any, agent: Any, tool: Any) -> None:
+        name = getattr(tool, "name", str(tool))
+        self._counts[name] = self._counts.get(name, 0) + 1
+        limit = _TOOL_MAX_CALLS.get(name)
+        if limit is not None and self._counts[name] > limit:
+            logger.warning(
+                "ToolCallGuard: '%s' called %d times (max %d) — blocking call",
+                name,
+                self._counts[name],
+                limit,
+            )
+            # Mark this call as blocked so on_tool_end knows to skip the done label
+            self._blocked_calls: set = getattr(self, "_blocked_calls", set())
+            self._blocked_calls.add(name)
+            raise RuntimeError(
+                f"[LIMIT] '{name}' has already been called the maximum number of times. "
+                "Use the results you already have and proceed to the next step."
+            )
+        progress = _TOOL_PROGRESS.get(name)
+        if progress:
+            await self._emit(f"*{progress}*")
+
+    async def on_tool_end(self, context: Any, agent: Any, tool: Any, result: str) -> None:
+        name = getattr(tool, "name", str(tool))
+        done = _TOOL_DONE.get(name)
+        if done:
+            await self._emit(f"*{done}*")
+
+
+def _build_messages(message: str, history) -> list:
+    """Convert Gradio history + current message into OpenAI message list."""
     messages = [{"role": "system", "content": system_prompt}]
-
     for turn in history:
-        # If turn is a list/tuple
         if isinstance(turn, (list, tuple)) and len(turn) >= 2:
-            user_msg = turn[0]
-            ai_msg = turn[1]
-
-        # If turn is a dict (newer Gradio format)
+            user_msg, ai_msg = turn[0], turn[1]
         elif isinstance(turn, dict):
-            if turn.get("role") == "user":
-                user_msg = turn.get("user") or turn.get("content") or turn.get("message")
-                ai_msg = None
-            elif turn.get("role") == "assistant":
-                user_msg = None
-                ai_msg = turn.get("assistant") or turn.get("content") or turn.get("message")
-            else:
-                user_msg = None
-                ai_msg = None
-
+            role = turn.get("role")
+            content = (
+                turn.get("content")
+                or turn.get("message")
+                or turn.get("user")
+                or turn.get("assistant")
+            )
+            user_msg = content if role == "user" else None
+            ai_msg = content if role == "assistant" else None
         else:
-            continue  # skip malformed turns
-
+            continue
         if user_msg:
             messages.append({"role": "user", "content": user_msg})
         if ai_msg:
             messages.append({"role": "assistant", "content": ai_msg})
-
-    # Append latest user message
     messages.append({"role": "user", "content": message})
+    return messages
 
-    # Run the agent with hard limits so UI does not appear stuck on tool loops.
+
+async def chat_stream(message: str, history) -> AsyncIterator[str]:
+    """
+    Streaming version of chat().
+
+    Yields incremental status strings while the agent runs tools, then
+    yields the final answer once the agent finishes.  Each yielded value
+    is the *full current* assistant bubble text (Gradio streaming convention).
+
+    Usage in Gradio:
+        chatbot.value = []
+        async for partial in chat_stream(msg, history):
+            chatbot[-1][1] = partial   # Gradio handles the update
+    """
+    messages = _build_messages(message, history)
+    progress_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+    guard = ToolCallGuard(progress_queue=progress_queue)
+
+    _SENTINEL = object()
+    accumulated_status: list[str] = []
+
+    async def _run_agent():
+        try:
+            result = await asyncio.wait_for(
+                Runner.run(scholarship_agent, messages, max_turns=8, hooks=guard),
+                timeout=300,
+            )
+            await progress_queue.put(result.final_output)
+        except asyncio.TimeoutError:
+            logger.error("Scholarship agent timed out")
+            await progress_queue.put("The search timed out. Please try a narrower query.")
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "[LIMIT]" in msg:
+                # A tool was called more times than its guard allows.
+                # The agent already gathered results; ask it to wrap up instead of crashing.
+                logger.warning("ToolCallGuard fired during streaming run: %s", msg)
+                await progress_queue.put(
+                    "The agent reached its tool-call budget. "
+                    "Please retry — if this persists, try a narrower query."
+                )
+            else:
+                logger.error("Scholarship agent runtime error: %s", exc)
+                await progress_queue.put("The search hit an internal error. Please retry.")
+        except Exception as exc:
+            logger.error("Scholarship agent failed: %s", exc)
+            await progress_queue.put("The search hit an internal error. Please retry.")
+        finally:
+            await progress_queue.put(_SENTINEL)  # type: ignore[arg-type]
+
+    agent_task = asyncio.create_task(_run_agent())
+
+    while True:
+        item = await progress_queue.get()
+        if item is _SENTINEL:
+            break
+        # Status messages (italics) are shown as a growing progress log
+        # until the final answer arrives (which replaces all of it).
+        if item and item.startswith("*") and item.endswith("*"):
+            accumulated_status.append(item)
+            yield "\n\n".join(accumulated_status)
+        else:
+            # Final answer — replace status lines with the real response
+            yield item
+
+    await agent_task
+
+
+async def chat(message: str, history) -> str:
+    """
+    Non-streaming wrapper kept for backward compatibility.
+    Returns the complete final answer string.
+    """
+    messages = _build_messages(message, history)
     try:
         response = await asyncio.wait_for(
-            Runner.run(scholarship_agent, messages, max_turns=8),
+            Runner.run(scholarship_agent, messages, max_turns=8, hooks=ToolCallGuard()),
             timeout=300,
         )
         return response.final_output
@@ -152,8 +292,20 @@ async def chat(message, history):
             "The search timed out before completion. "
             "Please try a narrower query (fewer universities or a more specific field)."
         )
+    except RuntimeError as e:
+        if "[LIMIT]" in str(e):
+            logger.warning("ToolCallGuard fired: %s", e)
+            return (
+                "The agent reached its tool-call budget. "
+                "Please retry — if this persists, try a narrower query."
+            )
+        logger.error("Scholarship agent runtime error: %s", e)
+        return (
+            "The search hit an internal processing error. "
+            "Please retry, and if it persists, try a narrower query."
+        )
     except Exception as e:
-        logger.error(f"Scholarship agent failed: {e}")
+        logger.error("Scholarship agent failed: %s", e)
         return (
             "The search hit an internal processing error. "
             "Please retry, and if it persists, try a narrower query."
