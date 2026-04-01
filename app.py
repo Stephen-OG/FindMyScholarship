@@ -4,7 +4,7 @@ import gradio as gr
 from agents import gen_trace_id, trace
 from dotenv import load_dotenv
 
-from scholarship_agents.schorlarship_agent import chat
+from scholarship_agents.schorlarship_agent import chat_stream
 
 load_dotenv(override=True)
 
@@ -19,16 +19,24 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     )
     search_btn = gr.Button("🚀 Search Funding")
 
-    # Prevent concurrent runs (double submit / double click) from triggering repeated crawling/analyzing.
+    # Prevent concurrent double-submits from triggering repeated crawls.
     run_lock = asyncio.Lock()
 
     async def run_query(message, history):
+        if not message or not message.strip():
+            yield history, message
+            return
+
         async with run_lock:
             trace_id = gen_trace_id()
+            # Add the user message immediately so the bubble appears at once
+            history = list(history) + [(message, "")]
+
             with trace("Scholarship Search", trace_id=trace_id):
-                result = await chat(message, history)
-            history.append((message, result))
-            return history, ""
+                async for partial in chat_stream(message, history[:-1]):
+                    # Replace the last assistant bubble with the latest partial
+                    history[-1] = (message, partial)
+                    yield history, ""
 
     search_btn.click(run_query, [query, chatbot], [chatbot, query])
     query.submit(run_query, [query, chatbot], [chatbot, query])

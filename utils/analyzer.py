@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 from agents import function_tool
@@ -12,7 +12,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from models.crawler_model import UniversityResult
-from utils.crawler import get_cached_crawl_payload
+from utils.crawl import get_cached_crawl_payload
 from utils.logger import logger
 
 load_dotenv(override=True)
@@ -483,6 +483,7 @@ def _collect_best_matches(analyzed_pages: List[Dict[str, Any]], limit: int = 3) 
 async def analyze_crawler_results(
     universities: List[UniversityResult],
     user_query: str,
+    extracted_keywords: Optional[List[str]] = None,
     min_relevance_score: int = 5,
 ) -> Dict[str, Any]:
     """
@@ -491,11 +492,22 @@ async def analyze_crawler_results(
     This tool accepts the crawler's university/page payload and returns a structured
     AnalyzerResult object, handling the flattening/grouping internally so the
     orchestrator does not need to manually reshape tool outputs.
+
+    Args:
+        extracted_keywords: Optional pre-extracted keywords from orchestrator.
+                           Can be used to improve relevance scoring and filtering.
+                           If None, analysis proceeds without keyword optimization.
     """
     universities_payload = [
         university.model_dump() if isinstance(university, UniversityResult) else university
         for university in universities
     ]
+
+    # Log keyword source for transparency
+    if extracted_keywords:
+        logger.info(f"🔍 Analyzer using pre-extracted keywords: {extracted_keywords}")
+    else:
+        logger.info("🔍 Analyzer running without pre-extracted keywords")
 
     analyzed_universities: List[Dict[str, Any]] = []
     total_opportunities_found = 0
@@ -506,7 +518,9 @@ async def analyze_crawler_results(
         funding_pages = university.get("funding_pages", []) or []
         candidate_pages = university.get("candidate_pages", []) or []
         cached_crawl_payload = (
-            get_cached_crawl_payload(university_domain, user_query) if university_domain else {}
+            await get_cached_crawl_payload(university_domain, user_query)
+            if university_domain
+            else {}
         )
         cached_funding_pages = cached_crawl_payload.get("funding_pages", []) or []
         cached_candidate_pages = cached_crawl_payload.get("candidate_pages", []) or []

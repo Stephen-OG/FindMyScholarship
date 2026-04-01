@@ -11,3 +11,5 @@ lxml
 tqdm
 uvicorn
 serpapi
+aiosqlite
+redis
