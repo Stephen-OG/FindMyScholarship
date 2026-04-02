@@ -1,8 +1,9 @@
 import asyncio
 from typing import Any, AsyncIterator, Optional
 
-from agents import Agent, RunHooks, Runner
+from agents import Agent, RunHooks, Runner, handoff
 
+from scholarship_agents.explorer_agent import explorer_agent
 from scholarship_agents.school_domain_agent import search_agent
 from utils.analyzer import analyze_crawler_results
 from utils.crawl import crawl_universities_formatted
@@ -80,14 +81,23 @@ TYPES OF FUNDING YOU CAN FIND:
 RESPONSE GUIDELINES:
 - Start with a brief summary of what you found
 - Group results by university
-- Highlight the most relevant opportunities first (based on relevance scores)
+- Highlight the most relevant opportunities first
 - Include direct links to all funding pages
-- Provide context from page previews
-- Be encouraging and helpful in tone
-- If few results found, suggest alternative searches
-- If the analyzer reports zero opportunities, clearly say no relevant funding opportunities were found
-- When zero opportunities are found, DO NOT present generic research/study/program pages as scholarship findings
-- When zero opportunities are found, suggestions must be framed as next steps, not as discovered results
+
+FORMATTING RULES — CRITICAL:
+- NEVER write "Not specified", "N/A", or "Unknown" for any field
+- If a field (deadline, amount, eligibility) was not found on the page, OMIT it entirely — do not show the label at all
+- For deadline: if not extracted, do NOT show a Deadline line — instead add one line: "→ Check the funding page for current deadlines"
+- For amount: if not extracted, do NOT show an Amount line — instead add: "→ Contact the department for funding details"
+- For eligibility: if not extracted, omit the line entirely
+- For application process: ALWAYS show a direct link or clear next step — never leave this blank
+- Each opportunity must end with a clear call to action: either a direct apply link or the exact page to visit
+
+QUALITY RULES:
+- If few results found, suggest specific alternative searches (different keywords, related departments, etc.)
+- If the analyzer reports zero opportunities, clearly say no funding was found and give 2-3 concrete next steps the user can take
+- DO NOT present generic program pages as scholarship findings
+- Every result must be actionable — the user should know exactly what to do next
 
 EXAMPLE FLOW (EXECUTE ONCE, THEN STOP):
 User: "PhD funding in machine learning at MIT, Stanford, Berkeley, CMU, and Harvard"
@@ -104,11 +114,21 @@ DO NOT:
 - Call analyze_crawler_results again after step 4 (analysis is done)
 - Loop back to any previous step
 
-REMEMBER: Execute each step ONCE, then move to the next. After presenting results, STOP.
+REMEMBER: Execute each step ONCE, then move to the next. After presenting results, hand off to the Results Explorer.
+
+HANDOFF RULES:
+- After presenting the full results in Step 5, ALWAYS hand off to results_explorer
+- The results_explorer will handle all follow-up questions: filtering, comparing, explaining, next-step advice
+- Do NOT hand off before results are ready — complete the full search first
+- If the user asks a follow-up question AND results are already in the conversation, hand off immediately without re-crawling
 """
 
 scholarship_agent = Agent(
-    name="Scholarship Researcher", instructions=system_prompt, tools=tools, model="gpt-4o-mini"
+    name="Scholarship Researcher",
+    instructions=system_prompt,
+    tools=tools,
+    handoffs=[handoff(explorer_agent)],
+    model="gpt-4o-mini",
 )
 
 # Per-tool call limits enforced programmatically (not just via prompt).
@@ -181,9 +201,12 @@ class ToolCallGuard(RunHooks):
             await self._emit(f"*{done}*")
 
 
-def _build_messages(message: str, history) -> list:
+def _build_messages(message: str, history, *, use_explorer: bool = False) -> list:
     """Convert Gradio history + current message into OpenAI message list."""
-    messages = [{"role": "system", "content": system_prompt}]
+    from scholarship_agents.explorer_agent import explorer_instructions
+
+    prompt = explorer_instructions if use_explorer else system_prompt
+    messages = [{"role": "system", "content": prompt}]
     for turn in history:
         if isinstance(turn, (list, tuple)) and len(turn) >= 2:
             user_msg, ai_msg = turn[0], turn[1]
@@ -207,6 +230,25 @@ def _build_messages(message: str, history) -> list:
     return messages
 
 
+def _is_followup(history) -> bool:
+    """
+    Returns True if the conversation already contains a completed search result,
+    meaning the user is asking a follow-up question rather than starting a new search.
+
+    Heuristic: the assistant has already replied at least once with a substantive
+    message (>200 chars), indicating the search pipeline has run.
+    """
+    for turn in history:
+        ai_msg = None
+        if isinstance(turn, (list, tuple)) and len(turn) >= 2:
+            ai_msg = turn[1]
+        elif isinstance(turn, dict) and turn.get("role") == "assistant":
+            ai_msg = turn.get("content", "")
+        if ai_msg and len(str(ai_msg)) > 200:
+            return True
+    return False
+
+
 async def chat_stream(message: str, history) -> AsyncIterator[str]:
     """
     Streaming version of chat().
@@ -215,22 +257,30 @@ async def chat_stream(message: str, history) -> AsyncIterator[str]:
     yields the final answer once the agent finishes.  Each yielded value
     is the *full current* assistant bubble text (Gradio streaming convention).
 
-    Usage in Gradio:
-        chatbot.value = []
-        async for partial in chat_stream(msg, history):
-            chatbot[-1][1] = partial   # Gradio handles the update
+    Routes follow-up questions directly to explorer_agent to avoid re-crawling.
     """
-    messages = _build_messages(message, history)
+    is_followup = _is_followup(history)
+    active_agent = explorer_agent if is_followup else scholarship_agent
+    messages = _build_messages(message, history, use_explorer=is_followup)
     progress_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
-    guard = ToolCallGuard(progress_queue=progress_queue)
+    # Explorer has no tools so the guard is only needed for the search agent
+    guard = ToolCallGuard(progress_queue=progress_queue) if not is_followup else None
 
     _SENTINEL = object()
     accumulated_status: list[str] = []
 
+    if is_followup:
+        logger.info("Follow-up detected — routing to Results Explorer (no crawl)")
+
     async def _run_agent():
         try:
             result = await asyncio.wait_for(
-                Runner.run(scholarship_agent, messages, max_turns=8, hooks=guard),
+                Runner.run(
+                    active_agent,
+                    messages,
+                    max_turns=8 if not is_followup else 3,
+                    hooks=guard,
+                ),
                 timeout=300,
             )
             await progress_queue.put(result.final_output)

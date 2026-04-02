@@ -147,21 +147,21 @@ CRITICAL RULES (STRICT):
    - Return opportunities: []
    - State in page_summary: "No funding information was found on this page."
 
-Extract the following if present (use "Not specified" if information is missing):
-1. Funding opportunities mentioned (name each one - use exact names from the page)
+Extract the following if explicitly stated on the page (omit the field entirely if not found — do NOT write "Not specified"):
+1. Funding opportunities mentioned (name each one — use exact names from the page)
 2. Degree level (PhD, Masters, Undergraduate, etc.)
 3. Field/discipline (if specific)
-4. Eligibility requirements
-5. Funding amount or type (full funding, tuition only, stipend amount, etc.)
-6. Application deadline (if mentioned)
+4. Eligibility requirements (only what is explicitly stated)
+5. Funding amount or type (exact figures or descriptions from the page — e.g. "£18,000/year stipend", "full tuition waiver")
+6. Application deadline (exact dates only — omit if no date is mentioned)
 7. Whether it's for international students, UK/EU students, or both
-8. How to apply (brief description or "See page for details")
+8. How to apply — use exact steps or URL from the page; if none given, use the page URL as the next step
 
 Be specific and extract actual details from the page. If the page lists multiple opportunities, list them all.
 
 DO NOT hallucinate.
 DO NOT fabricate funding.
-DO NOT create placeholders.
+DO NOT write "Not specified", "N/A", or placeholder values — omit the field instead.
 ONLY extract real funding opportunities from the input content.
 
 Return as JSON with this structure:
@@ -170,12 +170,12 @@ Return as JSON with this structure:
     {{
       "name": "Name of scholarship/funding (exact name from page)",
       "degree_level": "PhD/Masters/etc",
-      "field": "Subject area",
-      "eligibility": "Who can apply",
-      "amount": "Funding amount/type",
-      "deadline": "Application deadline",
+      "field": "Subject area (omit if not stated)",
+      "eligibility": "Who can apply (omit if not stated)",
+      "amount": "Funding amount/type (omit if not stated)",
+      "deadline": "YYYY-MM-DD or human-readable date (omit if not found on page)",
       "for_international": true/false,
-      "application_process": "How to apply"
+      "application_process": "Exact steps or URL to apply (never omit — always provide the source page URL as fallback)"
     }}
   ],
   "page_summary": "Brief 1-2 sentence summary of what this page offers. If no funding found, state that clearly.",
@@ -316,15 +316,15 @@ CRITICAL RULES (STRICT):
    - Return opportunities: []
    - State in page_summary: "No funding information was found on this page."
 
-For EACH page, extract the following if present (use "Not specified" if information is missing):
-1. Funding opportunities mentioned (name each one - use exact names from the page, be specific: "Graduate Research Assistantship", "Merit Scholarship", etc.)
+For EACH page, extract the following only when explicitly stated (omit the field entirely if not found — do NOT write "Not specified"):
+1. Funding opportunities mentioned (name each one — use exact names from the page, e.g. "Graduate Research Assistantship", "Merit Scholarship")
 2. Degree level (PhD, Masters, Undergraduate, etc.)
-3. Field/discipline (if specific - e.g., "Data Science", "Computer Science", etc.)
-4. Eligibility requirements (be specific: GPA requirements, citizenship, enrollment status, etc.)
-5. Funding amount or type (be specific: "$25,000/year", "Full tuition waiver", "£18,000 stipend", etc. - avoid generic terms)
-6. Application deadline (extract actual dates if mentioned)
+3. Field/discipline (e.g. "Data Science", "Computer Science" — omit if not stated)
+4. Eligibility requirements (GPA, citizenship, enrollment status — omit if not stated)
+5. Funding amount or type (exact figures from the page: "$25,000/year", "Full tuition waiver", "£18,000 stipend" — omit if not stated)
+6. Application deadline (exact dates only — omit if no date appears on the page)
 7. Whether it's for international students, domestic students, or both
-8. How to apply (specific steps, links, or "See page for details" if not specified)
+8. How to apply — exact steps or direct URL; if no steps are listed, use the page URL so the user knows where to go next
 
 EXTRACTION GUIDELINES:
 - If a page mentions "financial aid" or "funding available" but doesn't specify amounts, look for links to detailed pages
@@ -340,7 +340,7 @@ DO NOT fabricate funding.
 DO NOT create placeholders.
 ONLY extract real funding opportunities from the input content.
 
-Return as JSON with this structure:
+Return as JSON with this structure (omit any field whose value is unknown — never write "Not specified"):
 {{
   "pages": [
     {{
@@ -349,12 +349,12 @@ Return as JSON with this structure:
         {{
           "name": "Name of scholarship/funding",
           "degree_level": "PhD/Masters/etc",
-          "field": "Subject area",
-          "eligibility": "Who can apply",
-          "amount": "Funding amount/type",
-          "deadline": "Application deadline",
+          "field": "Subject area (omit if not stated)",
+          "eligibility": "Who can apply (omit if not stated)",
+          "amount": "Exact funding amount/type (omit if not stated)",
+          "deadline": "Exact date (omit if not found on page)",
           "for_international": true/false,
-          "application_process": "How to apply"
+          "application_process": "Exact steps or source page URL — never omit"
         }}
       ],
       "page_summary": "Brief 1-2 sentence summary of what this page offers",
