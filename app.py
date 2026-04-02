@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 import gradio as gr
 from agents import gen_trace_id, trace
@@ -42,4 +43,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     query.submit(run_query, [query, chatbot], [chatbot, query])
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(
+        server_name=os.getenv("GRADIO_SERVER_NAME", "0.0.0.0"),
+        server_port=int(os.getenv("GRADIO_SERVER_PORT", "7860")),
+    )
