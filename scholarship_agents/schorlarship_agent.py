@@ -1,4 +1,5 @@
 import asyncio
+import re as _re
 from typing import Any, AsyncIterator, Optional
 
 from agents import Agent, RunHooks, Runner, handoff
@@ -7,6 +8,7 @@ from scholarship_agents.explorer_agent import explorer_agent
 from scholarship_agents.school_domain_agent import search_agent
 from utils.analyzer import analyze_crawler_results
 from utils.crawl import crawl_universities_formatted
+from utils.keyword_extractor import extract_query_keywords
 from utils.logger import logger
 
 logger.info("Starting scholarship agent")
@@ -20,107 +22,27 @@ search_agent_tool = search_agent.as_tool(
 tools = [search_agent_tool, crawl_universities_formatted, analyze_crawler_results]
 
 system_prompt = """
-You are FindMyScholarship AI - an intelligent assistant that helps students discover funding opportunities.
+You are FindMyScholarship AI — you help students find university funding opportunities.
 
-🔑 KEYWORD EXTRACTION OPTIMIZATION:
-- Keywords for this query have been pre-extracted by the system
-- When you call crawl_universities_formatted: PASS the extracted_keywords from the context message
-- When you call analyze_crawler_results: PASS the extracted_keywords from the context message
-- This optimization reduces redundant LLM calls and improves efficiency
+WORKFLOW (run each step once, in order):
+1. DOMAINS  — call university_domain_search to get official university URLs.
+              If the query names no universities, search up to 5. If the query is
+              too vague, ask the user to narrow it before searching.
+2. CRAWL    — call crawl_universities_formatted in batches of up to 4 universities.
+              Always pass: user_query AND extracted_keywords (from [SYSTEM CONTEXT]).
+3. ANALYZE  — call analyze_crawler_results once with all crawled universities.
+              Always pass: user_query AND extracted_keywords (from [SYSTEM CONTEXT]).
+4. PRESENT  — show results grouped by university, then hand off to results_explorer.
 
-APP WORKFLOW (EXECUTE ONCE, THEN STOP):
-1. USER INPUT: Student describes what they're looking for (field of study, degree level, preferred universities, etc.)
-2. DOMAIN DISCOVERY: Use the university_domain_search tool ONCE to find all relevant university websites
-   - This returns a list of universities and their domains
-   - DO NOT call this tool multiple times for the same query
-   - For broad topic queries (no explicit university names), limit to at most 5 universities
-   - If the query is too broad/ambiguous, ask the user to narrow it before deep crawling
-3. SMART CRAWLING: Use crawl_universities_formatted to search university websites
-   - CRITICAL: Call crawl_universities_formatted ONCE per batch of universities (max 3-4 per call)
-   - CRITICAL: Always pass the user's original query to the tool for keyword extraction
-   - IMPORTANT: Pass extracted_keywords parameter (from context) to avoid re-extraction
-   - If you have many universities, make MULTIPLE separate crawl_universities_formatted calls (one per batch)
-   - Each university can return up to 40 crawled pages from a crawl budget of up to 40 visited pages
-   - Example: For 6 universities, make 2 Crawler calls: First 3, then next 3
-   - STOP CRAWLING once all universities have been crawled
-4. ANALYZE CONTENT: Use analyze_crawler_results ONCE with all crawled results
-   - Pass the `universities` list from the crawler output in step 3 AND the user query
-   - IMPORTANT: Pass extracted_keywords parameter (from context) to avoid re-extraction
-   - The tool will internally analyze the returned crawler pages and return a valid AnalyzerResult object
-   - This extracts specific scholarship names, amounts, deadlines, eligibility
-   - Returns organized, detailed funding information
-5. PRESENT RESULTS: Format and present the analyzed results to the user
-   - Group by university
-   - Highlight most relevant opportunities
-   - Include direct links
-   - THEN STOP - do not call any more tools
+KEYWORDS: The user message contains a [SYSTEM CONTEXT] block with extracted_keywords.
+You MUST forward that exact list to both crawl and analyze tool calls.
 
-CRITICAL STOPPING RULES:
-- After step 2: DO NOT call university_domain_search again
-- After step 3: DO NOT call crawl_universities_formatted again - you already have all results
-- After step 4: DO NOT call analyze_crawler_results again - analysis is complete
-- After step 5: STOP and present results - workflow is complete
-- If runtime is getting long, return partial findings from completed universities instead of starting new crawling/analysis cycles
-
-CONTEXT MANAGEMENT:
-- Each university returns TOP pages ranked by relevance (automatically sorted)
-- DO NOT crawl more than 3-4 universities in a single crawl_universities_formatted call
-- For broad queries without explicit university names, do not exceed 5 universities total
-- For many universities, use multiple sequential Crawler calls, then STOP
-- The analyzer tool decides how to batch and filter page analysis internally
-
-TYPES OF FUNDING YOU CAN FIND:
-- PhD scholarships and studentships
-- Master's funding opportunities
-- Doctoral training programs
-- Research grants and fellowships
-- International student scholarships
-- Department-specific funding
-- University-wide financial aid
-
-RESPONSE GUIDELINES:
-- Start with a brief summary of what you found
-- Group results by university
-- Highlight the most relevant opportunities first
-- Include direct links to all funding pages
-
-FORMATTING RULES — CRITICAL:
-- NEVER write "Not specified", "N/A", or "Unknown" for any field
-- If a field (deadline, amount, eligibility) was not found on the page, OMIT it entirely — do not show the label at all
-- For deadline: if not extracted, do NOT show a Deadline line — instead add one line: "→ Check the funding page for current deadlines"
-- For amount: if not extracted, do NOT show an Amount line — instead add: "→ Contact the department for funding details"
-- For eligibility: if not extracted, omit the line entirely
-- For application process: ALWAYS show a direct link or clear next step — never leave this blank
-- Each opportunity must end with a clear call to action: either a direct apply link or the exact page to visit
-
-QUALITY RULES:
-- If few results found, suggest specific alternative searches (different keywords, related departments, etc.)
-- If the analyzer reports zero opportunities, clearly say no funding was found and give 2-3 concrete next steps the user can take
-- DO NOT present generic program pages as scholarship findings
-- Every result must be actionable — the user should know exactly what to do next
-
-EXAMPLE FLOW (EXECUTE ONCE, THEN STOP):
-User: "PhD funding in machine learning at MIT, Stanford, Berkeley, CMU, and Harvard"
-
-Step 1: Call university_domain_search ONCE → Returns 5 universities
-Step 2: Call crawl_universities_formatted with first 3 universities (pass extracted_keywords) → Returns pages
-Step 3: Call crawl_universities_formatted with remaining 2 universities (pass extracted_keywords) → Returns pages
-Step 4: Call analyze_crawler_results ONCE with ALL results from steps 2-3 (pass extracted_keywords) → Returns analyzed data
-Step 5: Present results to user → STOP (workflow complete)
-
-DO NOT:
-- Call university_domain_search again after step 1
-- Call crawl_universities_formatted again after step 3 (you already have all pages)
-- Call analyze_crawler_results again after step 4 (analysis is done)
-- Loop back to any previous step
-
-REMEMBER: Execute each step ONCE, then move to the next. After presenting results, hand off to the Results Explorer.
-
-HANDOFF RULES:
-- After presenting the full results in Step 5, ALWAYS hand off to results_explorer
-- The results_explorer will handle all follow-up questions: filtering, comparing, explaining, next-step advice
-- Do NOT hand off before results are ready — complete the full search first
-- If the user asks a follow-up question AND results are already in the conversation, hand off immediately without re-crawling
+OUTPUT RULES:
+- Omit any field (deadline, amount, eligibility) not found — never write "Not specified"
+- Missing deadline → "→ Check the funding page for current deadlines"
+- Missing amount   → "→ Contact the department for funding details"
+- Every opportunity must end with a direct link or clear next step
+- Zero results → say so plainly and give 2-3 concrete next steps
 """
 
 scholarship_agent = Agent(
@@ -201,8 +123,21 @@ class ToolCallGuard(RunHooks):
             await self._emit(f"*{done}*")
 
 
-def _build_messages(message: str, history, *, use_explorer: bool = False) -> list:
-    """Convert Gradio history + current message into OpenAI message list."""
+def _build_messages(
+    message: str,
+    history,
+    *,
+    use_explorer: bool = False,
+    keywords: list[str] | None = None,
+) -> list:
+    """
+    Convert Gradio history + current message into OpenAI message list.
+
+    If `keywords` are provided (pre-extracted before agent run), they are
+    appended to the user message as an explicit context block.  The agent
+    reads this and MUST pass extracted_keywords to both crawl and analyze
+    tool calls — eliminating redundant in-tool extraction.
+    """
     from scholarship_agents.explorer_agent import explorer_instructions
 
     prompt = explorer_instructions if use_explorer else system_prompt
@@ -226,17 +161,90 @@ def _build_messages(message: str, history, *, use_explorer: bool = False) -> lis
             messages.append({"role": "user", "content": user_msg})
         if ai_msg:
             messages.append({"role": "assistant", "content": ai_msg})
-    messages.append({"role": "user", "content": message})
+
+    # Append pre-extracted keywords as a mandatory context block so the agent
+    # never needs to call extract_query_keywords itself.
+    if keywords and not use_explorer:
+        kw_block = (
+            f"\n\n[SYSTEM CONTEXT — DO NOT SHOW TO USER]\n"
+            f"extracted_keywords: {keywords}\n"
+            f"IMPORTANT: Pass this exact list as the `extracted_keywords` parameter "
+            f"to BOTH crawl_universities_formatted AND analyze_crawler_results."
+        )
+        messages.append({"role": "user", "content": message + kw_block})
+    else:
+        messages.append({"role": "user", "content": message})
     return messages
+
+
+# Minimum number of distinct funding terms that must appear in an assistant message
+# for it to be treated as a completed search result (vs. error / clarifying question).
+_FUNDING_VOCABULARY = frozenset(
+    {
+        "scholarship",
+        "studentship",
+        "fellowship",
+        "bursary",
+        "grant",
+        "stipend",
+        "tuition",
+        "funded",
+        "funding",
+        "phd",
+        "doctoral",
+        "masters",
+        "postdoctoral",
+        "assistantship",
+    }
+)
+_FOLLOWUP_MIN_LENGTH = 400
+_FOLLOWUP_MIN_MARKERS = 3
+
+# Patterns that signal the user wants a NEW search, not a refinement.
+# Matched against the incoming message (lowercased) before _is_followup runs.
+_NEW_SEARCH_PATTERNS = _re.compile(
+    r"""
+    \b(university|college|institute|school)\s+of\b   # "university of X"
+    | \bat\s+(university|college|the\s+university)\b  # "at the university"
+    | \b(search|find|look)\s+(for|up|at)\b            # "search for", "find funding"
+    | \bsame\s+\w+\s+(in|at|for)\b                   # "same topic in X"
+    | \bwhat\s+about\b                                # "what about X"
+    | \bhow\s+about\b                                 # "how about X"
+    | \balso\s+(check|search|look)\b                  # "also check X"
+    | \binstead\b                                     # "search X instead"
+    | \banother\s+university\b                        # "another university"
+    | \bdifferent\s+university\b                      # "different university"
+    """,
+    _re.VERBOSE | _re.IGNORECASE,
+)
+
+
+def _is_new_search(message: str) -> bool:
+    """
+    Returns True when the incoming message looks like a new search request
+    rather than a follow-up question about already-returned results.
+
+    This overrides _is_followup so the full pipeline runs even when results
+    already exist in history. Examples that trigger this:
+      - "same research topic in university of alabama"
+      - "what about Oxford instead?"
+      - "search for PhD funding at Cambridge"
+      - "find funding at another university"
+    """
+    return bool(_NEW_SEARCH_PATTERNS.search(message))
 
 
 def _is_followup(history) -> bool:
     """
-    Returns True if the conversation already contains a completed search result,
-    meaning the user is asking a follow-up question rather than starting a new search.
+    Returns True only when a *completed* funding search result exists in history.
 
-    Heuristic: the assistant has already replied at least once with a substantive
-    message (>200 chars), indicating the search pipeline has run.
+    Two signals must both be true for any assistant message:
+    1. Length > _FOLLOWUP_MIN_LENGTH  — rules out short errors and status strings
+    2. >= _FOLLOWUP_MIN_MARKERS distinct funding terms — rules out long clarifying
+       questions, timeout messages, and tool-limit notices (none contain 3+ terms)
+
+    This prevents the explorer agent from being activated prematurely when the
+    search pipeline hasn't actually run yet.
     """
     for turn in history:
         ai_msg = None
@@ -244,7 +252,10 @@ def _is_followup(history) -> bool:
             ai_msg = turn[1]
         elif isinstance(turn, dict) and turn.get("role") == "assistant":
             ai_msg = turn.get("content", "")
-        if ai_msg and len(str(ai_msg)) > 200:
+        if not ai_msg or len(str(ai_msg)) < _FOLLOWUP_MIN_LENGTH:
+            continue
+        text = str(ai_msg).lower()
+        if sum(1 for term in _FUNDING_VOCABULARY if term in text) >= _FOLLOWUP_MIN_MARKERS:
             return True
     return False
 
@@ -258,10 +269,31 @@ async def chat_stream(message: str, history) -> AsyncIterator[str]:
     is the *full current* assistant bubble text (Gradio streaming convention).
 
     Routes follow-up questions directly to explorer_agent to avoid re-crawling.
+
+    Pre-extracts keywords before the agent runs and injects them into the
+    context message so the agent always passes them to crawler and analyzer —
+    guaranteeing a single LLM extraction call per query regardless of whether
+    the model remembers to forward the parameter.
     """
-    is_followup = _is_followup(history)
+    # A message that looks like a new search always runs the full pipeline,
+    # even when prior results exist in history.
+    is_followup = _is_followup(history) and not _is_new_search(message)
     active_agent = explorer_agent if is_followup else scholarship_agent
-    messages = _build_messages(message, history, use_explorer=is_followup)
+
+    # Pre-extract keywords once for new searches so crawler + analyzer reuse them.
+    # Explorer queries skip this — they don't call any tools.
+    extracted_keywords: list[str] = []
+    if not is_followup:
+        try:
+            kw = await extract_query_keywords(message)
+            extracted_keywords = kw.all_keywords
+            logger.info("Pre-extracted keywords: %s", extracted_keywords)
+        except Exception as exc:
+            logger.warning("Keyword pre-extraction failed, agent will extract inline: %s", exc)
+
+    messages = _build_messages(
+        message, history, use_explorer=is_followup, keywords=extracted_keywords
+    )
     progress_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
     # Explorer has no tools so the guard is only needed for the search agent
     guard = ToolCallGuard(progress_queue=progress_queue) if not is_followup else None

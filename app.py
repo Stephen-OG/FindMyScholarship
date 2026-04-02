@@ -15,7 +15,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     chatbot = gr.Chatbot(label="📋 Funding Search Results", height=500)
     query = gr.Textbox(
         label="🔍 What funding are you looking for?",
-        placeholder="e.g., PhD funding in machine learning at University of Oregon or UK universities",
+        placeholder="e.g., PhD funding in machine learning at University of Exeter or UK universities",
     )
     search_btn = gr.Button("🚀 Search Funding")
 
