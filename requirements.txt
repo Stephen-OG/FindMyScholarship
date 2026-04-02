@@ -3,7 +3,7 @@ python-dotenv
 gradio
 pypdf
 openai
-openai-agents
+openai-agents>=0.4.2
 aiohttp
 beautifulsoup4
 pydantic

@@ -16,7 +16,6 @@ logger.info("Starting scholarship agent")
 search_agent_tool = search_agent.as_tool(
     tool_name="university_domain_search",
     tool_description="Find university domains for given schools or research topics. Call ONCE per query to get all relevant universities. Returns list of universities with their official domains.",
-    max_turns=5,
 )
 
 tools = [search_agent_tool, crawl_universities_formatted, analyze_crawler_results]
