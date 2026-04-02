@@ -13,7 +13,7 @@ load_dotenv(override=True)
 with gr.Blocks(theme=gr.themes.Soft()) as demo:
     gr.Markdown("# 🎓 FindMyScholarship AI")
 
-    chatbot = gr.Chatbot(label="📋 Funding Search Results", height=500)
+    chatbot = gr.Chatbot(label="📋 Funding Search Results", height=500, type="messages")
     query = gr.Textbox(
         label="🔍 What funding are you looking for?",
         placeholder="e.g., PhD funding in machine learning at University of Exeter or UK universities",
@@ -30,13 +30,17 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
 
         async with run_lock:
             trace_id = gen_trace_id()
-            # Add the user message immediately so the bubble appears at once
-            history = list(history) + [(message, "")]
+            history = list(history or [])
+            # Add the user message immediately so the bubble appears at once.
+            history.append({"role": "user", "content": message})
+            history.append({"role": "assistant", "content": ""})
+
+            prior_history = history[:-2]
 
             with trace("Scholarship Search", trace_id=trace_id):
-                async for partial in chat_stream(message, history[:-1]):
+                async for partial in chat_stream(message, prior_history):
                     # Replace the last assistant bubble with the latest partial
-                    history[-1] = (message, partial)
+                    history[-1] = {"role": "assistant", "content": partial}
                     yield history, ""
 
     search_btn.click(run_query, [query, chatbot], [chatbot, query])
