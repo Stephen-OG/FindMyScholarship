@@ -115,8 +115,19 @@ async def crawl_university(
     Subsequent calls for the same domain+query return instantly from cache.
     """
     domain_scope = get_domain_scope(domain_url)
-    cache_key = f"crawl:{domain_scope}:{normalize_query_cache_key(user_query)}"
     _cache = get_cache()
+
+    # ── Keyword setup (must run before cache key, for a stable key) ────────────
+    custom_keywords = list(precomputed_keywords or [])
+    if not custom_keywords and user_query:
+        kw = await extract_query_keywords(user_query)
+        custom_keywords = kw.all_keywords
+    if custom_keywords:
+        logger.info("Keywords for %s: %s", domain_url, ", ".join(custom_keywords))
+
+    # Key on (domain, sorted_keywords) so semantically equivalent queries share
+    # the same cache entry regardless of how the user phrased the original query.
+    cache_key = f"crawl:{domain_scope}:{normalize_query_cache_key(user_query, custom_keywords)}"
 
     # ── Cache hit ──────────────────────────────────────────────────────────────
     cached = await _cache.get(cache_key)
@@ -128,14 +139,6 @@ async def crawl_university(
                 sanitize_page_payload(p) for p in cached.get("candidate_pages", [])
             ],
         }
-
-    # ── Keyword setup ──────────────────────────────────────────────────────────
-    custom_keywords = list(precomputed_keywords or [])
-    if not custom_keywords and user_query:
-        kw = await extract_query_keywords(user_query)
-        custom_keywords = kw.all_keywords
-    if custom_keywords:
-        logger.info("Keywords for %s: %s", domain_url, ", ".join(custom_keywords))
 
     keyword_pattern = create_dynamic_keyword_pattern(custom_keywords)
     query_constraints = build_query_constraints(user_query, custom_keywords)
@@ -341,11 +344,24 @@ async def crawl_university(
 
 
 async def get_cached_crawl_payload(
-    domain_url: str, user_query: Optional[str] = None
+    domain_url: str,
+    user_query: Optional[str] = None,
+    keywords: Optional[List[str]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Return sanitized cached crawl results, or empty dicts if no cache entry."""
+    """
+    Return sanitized cached crawl results, or empty dicts if no cache entry.
+
+    Pass `keywords` (from extract_query_keywords) to use the same stable key
+    that crawl_university() wrote. Falling back to raw query is kept for
+    callers that don't have keywords available.
+    """
     domain_scope = get_domain_scope(domain_url)
-    cache_key = f"crawl:{domain_scope}:{normalize_query_cache_key(user_query)}"
+    # Resolve keywords if not provided, so the key matches what crawl_university stored
+    resolved_keywords = list(keywords or [])
+    if not resolved_keywords and user_query:
+        kw = await extract_query_keywords(user_query)
+        resolved_keywords = kw.all_keywords
+    cache_key = f"crawl:{domain_scope}:{normalize_query_cache_key(user_query, resolved_keywords)}"
     cached = await get_cache().get(cache_key) or {}
     return {
         "funding_pages": [sanitize_page_payload(p) for p in cached.get("funding_pages", [])],

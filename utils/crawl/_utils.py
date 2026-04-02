@@ -120,7 +120,20 @@ def get_domain_scope(url: str) -> str:
     return ".".join(parts[-2:])
 
 
-def normalize_query_cache_key(query) -> str:
+def normalize_query_cache_key(query, keywords: list | None = None) -> str:
+    """
+    Build a stable cache key component from a query and/or keyword list.
+
+    Strategy:
+    - If keywords are provided: sort them, join, hash → deterministic regardless
+      of query phrasing.  "PhD ML funding" and "machine learning doctoral funding"
+      produce the same keywords and therefore the same cache key.
+    - If only a raw query is provided (legacy path): normalise the string directly.
+      Less stable but keeps backward compatibility for callers without keywords.
+    """
+    if keywords:
+        stable = "-".join(sorted(k.lower().strip() for k in keywords if k.strip()))
+        return stable
     return normalized_match_text(query or "")
 
 
