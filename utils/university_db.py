@@ -312,8 +312,19 @@ def lookup_university(school: str, country: Optional[str] = None) -> List[str]:
         if country_filtered:
             candidates = country_filtered
 
-    # Sort by score descending, return domains from top entry
-    candidates.sort(key=lambda idx: scores[idx], reverse=True)
+    # Precompute each entry's total token count for precision tie-breaking.
+    # Precision = matched_tokens / entry_total_tokens.  Higher precision means
+    # the entry is a "tighter" match (fewer unrelated tokens), which correctly
+    # disambiguates e.g. "University College London" (tokens: ["london"]) from
+    # "Imperial College London" (tokens: ["imperial", "london"]).
+    def _entry_token_count(idx: int) -> int:
+        entry = _DB[idx]
+        return len({t for src in [entry.canonical_name] + entry.aliases for t in _tokenize(src)})
+
+    candidates.sort(
+        key=lambda idx: (scores[idx], scores[idx] / max(_entry_token_count(idx), 1)),
+        reverse=True,
+    )
     best_entry = _DB[candidates[0]]
     return list(best_entry.domains)
 

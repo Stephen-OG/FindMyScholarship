@@ -91,7 +91,7 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
         return cached_html
 
     try:
-        async with session.get(url, headers=HEADERS, timeout=timeout) as r:
+        async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
             html = await r.text()
             if r.status == 200 and _is_html_response(r.headers.get("content-type", ""), html):
                 await cache.set(cache_key, html, HTML_CACHE_TTL)
