@@ -14,7 +14,14 @@ from pydantic import BaseModel
 from utils.cache import KEYWORD_TTL_SECONDS, get_cache
 from utils.logger import logger
 
-client = AsyncOpenAI()
+_client: AsyncOpenAI | None = None
+
+
+def _get_client() -> AsyncOpenAI:
+    global _client
+    if _client is None:
+        _client = AsyncOpenAI()
+    return _client
 
 
 class QueryKeywords(BaseModel):
@@ -58,7 +65,7 @@ async def extract_query_keywords(query: str) -> QueryKeywords:
         return QueryKeywords(**cached)
 
     try:
-        response = await client.chat.completions.create(
+        response = await _get_client().chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {

@@ -17,7 +17,14 @@ from utils.logger import logger
 
 load_dotenv(override=True)
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_client: AsyncOpenAI | None = None
+
+
+def _get_client() -> AsyncOpenAI:
+    global _client
+    if _client is None:
+        _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    return _client
 
 # Maximum pages to analyze in a single batch (to stay within token limits)
 MAX_PAGES_PER_BATCH = 5
@@ -182,7 +189,7 @@ Return as JSON with this structure:
   "relevance_to_query": "How relevant is this to the user's needs (High/Medium/Low)"
 }}"""
 
-    response = await client.chat.completions.create(
+    response = await _get_client().chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
@@ -366,7 +373,7 @@ Return as JSON with this structure (omit any field whose value is unknown — ne
 IMPORTANT: Return results for ALL {len(batch)} pages in the order they were provided."""
 
         try:
-            response = await client.chat.completions.create(
+            response = await _get_client().chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {
