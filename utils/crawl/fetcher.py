@@ -5,11 +5,13 @@ The fetch() function adds page-level HTML caching (24h TTL) so re-crawling
 the same URL within or across sessions doesn't re-hit the network.
 """
 
+import asyncio
 import os
 from typing import Dict, List, Optional, Set
 from urllib.parse import urljoin
 
 import aiohttp
+import requests
 from bs4 import BeautifulSoup
 
 try:
@@ -37,6 +39,38 @@ SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
 HTML_CACHE_TTL = int(os.getenv("HTML_CACHE_TTL_SECONDS", str(24 * 3600)))  # 24 hours
 
 
+def _looks_like_html(body: str) -> bool:
+    sample = (body or "").lstrip().lower()
+    return sample.startswith("<!doctype html") or sample.startswith("<html") or "<html" in sample[:500]
+
+
+def _is_html_response(content_type: str, body: str) -> bool:
+    content_type = (content_type or "").lower()
+    return (
+        "text/html" in content_type
+        or "application/xhtml+xml" in content_type
+        or _looks_like_html(body)
+    )
+
+
+def _requests_fetch(url: str, timeout: int) -> Optional[str]:
+    """Best-effort fallback for sites that behave poorly with aiohttp."""
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+        body = response.text
+        if response.ok and _is_html_response(response.headers.get("content-type", ""), body):
+            return body
+        logger.debug(
+            "Requests fallback skipped %s: status=%s content_type=%s",
+            url,
+            response.status_code,
+            response.headers.get("content-type", ""),
+        )
+    except Exception as exc:
+        logger.debug("Requests fallback failed for %s: %s", url, exc)
+    return None
+
+
 # ── HTTP Fetch (with URL-level HTML cache) ─────────────────────────────────────
 
 
@@ -58,16 +92,23 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
 
     try:
         async with session.get(url, headers=HEADERS, timeout=timeout) as r:
-            content_type = r.headers.get("content-type", "").lower()
-            if r.status == 200 and (
-                "text/html" in content_type or "application/xhtml+xml" in content_type
-            ):
-                html = await r.text()
+            html = await r.text()
+            if r.status == 200 and _is_html_response(r.headers.get("content-type", ""), html):
                 await cache.set(cache_key, html, HTML_CACHE_TTL)
                 return html
-            logger.debug("Skipping %s: status=%s content_type=%s", url, r.status, content_type)
+            logger.debug(
+                "Skipping %s: status=%s content_type=%s",
+                url,
+                r.status,
+                r.headers.get("content-type", "").lower(),
+            )
     except Exception as exc:
         logger.debug("Fetch failed for %s: %s", url, exc)
+
+    html = await asyncio.to_thread(_requests_fetch, url, timeout)
+    if html is not None:
+        await cache.set(cache_key, html, HTML_CACHE_TTL)
+        return html
 
     return None
 
