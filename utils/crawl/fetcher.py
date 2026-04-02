@@ -44,6 +44,17 @@ def _looks_like_html(body: str) -> bool:
     return sample.startswith("<!doctype html") or sample.startswith("<html") or "<html" in sample[:500]
 
 
+def _is_bot_challenge(status: int, body: str) -> bool:
+    """Return True when the response is a bot-protection challenge (e.g. Cloudflare)."""
+    if status not in (403, 429, 503):
+        return False
+    sample = (body or "").lower()
+    return any(
+        marker in sample
+        for marker in ("just a moment", "cf-browser-verification", "enable javascript", "checking your browser")
+    )
+
+
 def _is_html_response(content_type: str, body: str) -> bool:
     content_type = (content_type or "").lower()
     return (
@@ -96,12 +107,15 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
             if r.status == 200 and _is_html_response(r.headers.get("content-type", ""), html):
                 await cache.set(cache_key, html, HTML_CACHE_TTL)
                 return html
-            logger.debug(
-                "Skipping %s: status=%s content_type=%s",
-                url,
-                r.status,
-                r.headers.get("content-type", "").lower(),
-            )
+            if _is_bot_challenge(r.status, html):
+                logger.warning("⚠️  Bot protection detected for %s (status=%s) — site is blocking automated access", url, r.status)
+            else:
+                logger.debug(
+                    "Skipping %s: status=%s content_type=%s",
+                    url,
+                    r.status,
+                    r.headers.get("content-type", "").lower(),
+                )
     except Exception as exc:
         logger.debug("Fetch failed for %s: %s", url, exc)
 

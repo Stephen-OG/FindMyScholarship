@@ -86,16 +86,28 @@ def _format_university_result(
     # Prefer candidate_pages (broader) for downstream analysis; fall back to funding_pages
     funding_pages_for_analysis = candidate_pages or filtered_funding_pages
 
+    access_blocked = crawl_result.get("access_blocked", False)
+    if access_blocked:
+        summary = (
+            f"⚠️ Could not retrieve pages from {uni['domain']} — "
+            "the site appears to block automated access (e.g. Cloudflare bot protection). "
+            "Results for this university may be incomplete or unavailable. "
+            "Suggest the user visit the funding page directly."
+        )
+    else:
+        summary = (
+            f"Found {len(filtered_funding_pages)} high-confidence funding page(s) "
+            f"and {len(candidate_pages)} crawler candidate page(s)."
+        )
+
     return {
         "school": uni["school"],
         "domain": uni["domain"],
         "funding_pages": funding_pages_for_analysis,
         "candidate_pages": candidate_pages,
         "filtered_funding_pages": filtered_funding_pages,
-        "summary": (
-            f"Found {len(filtered_funding_pages)} high-confidence funding page(s) "
-            f"and {len(candidate_pages)} crawler candidate page(s)."
-        ),
+        "access_blocked": access_blocked,
+        "summary": summary,
         # Attach best score for cross-university ranking
         "_max_relevance_score": max(all_scores, default=0),
     }

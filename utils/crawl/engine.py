@@ -335,9 +335,18 @@ async def crawl_university(
         reverse=True,
     )[:max_results]
 
+    access_blocked = len(fetched_page_results) == 0
+    if access_blocked:
+        logger.warning(
+            "⚠️  %s: no pages fetched after crawl + fallback — "
+            "site likely blocks automated access (Cloudflare or similar)",
+            domain_url,
+        )
+
     payload = {
         "funding_pages": [sanitize_page_payload(p) for p in final_results],
         "candidate_pages": list(candidate_pages),
+        "access_blocked": access_blocked,
     }
     await _cache.set(cache_key, payload, CRAWL_TTL_SECONDS)
     return payload
