@@ -130,17 +130,14 @@ def _build_messages(
     keywords: list[str] | None = None,
 ) -> list:
     """
-    Convert Gradio history + current message into OpenAI message list.
+    Convert Gradio history + current message into Responses API input items.
 
     If `keywords` are provided (pre-extracted before agent run), they are
     appended to the user message as an explicit context block.  The agent
     reads this and MUST pass extracted_keywords to both crawl and analyze
     tool calls — eliminating redundant in-tool extraction.
     """
-    from scholarship_agents.explorer_agent import explorer_instructions
-
-    prompt = explorer_instructions if use_explorer else system_prompt
-    messages = [{"role": "system", "content": prompt}]
+    messages = []
     for turn in history:
         if isinstance(turn, (list, tuple)) and len(turn) >= 2:
             user_msg, ai_msg = turn[0], turn[1]
@@ -157,9 +154,19 @@ def _build_messages(
         else:
             continue
         if user_msg:
-            messages.append({"role": "user", "content": user_msg})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": str(user_msg)}],
+                }
+            )
         if ai_msg:
-            messages.append({"role": "assistant", "content": ai_msg})
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": str(ai_msg)}],
+                }
+            )
 
     # Append pre-extracted keywords as a mandatory context block so the agent
     # never needs to call extract_query_keywords itself.
@@ -170,9 +177,16 @@ def _build_messages(
             f"IMPORTANT: Pass this exact list as the `extracted_keywords` parameter "
             f"to BOTH crawl_universities_formatted AND analyze_crawler_results."
         )
-        messages.append({"role": "user", "content": message + kw_block})
+        messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": message + kw_block}],
+            }
+        )
     else:
-        messages.append({"role": "user", "content": message})
+        messages.append(
+            {"role": "user", "content": [{"type": "input_text", "text": message}]}
+        )
     return messages
 
 
