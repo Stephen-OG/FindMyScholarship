@@ -1,3 +1,14 @@
+---
+title: FindMyScholarship AI
+emoji: 🎓
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+sdk_version: "5.49.1"
+app_file: app.py
+pinned: false
+---
+
 # 🎓 FindMyScholarship AI
 
 FindMyScholarship AI is an agentic web application that helps students and researchers discover scholarships, funding opportunities, and grants for Master's and PhD programs by automatically searching and analysing official university websites.
