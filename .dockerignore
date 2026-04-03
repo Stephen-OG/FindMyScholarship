@@ -2,8 +2,12 @@
 .gitignore
 .venv
 __pycache__/
+**/__pycache__/
 *.pyc
+*.pyo
+*.pyd
 .DS_Store
 cache/
 note.ipynb
 .vscode/
+.env
