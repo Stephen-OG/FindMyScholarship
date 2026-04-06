@@ -26,6 +26,7 @@ def _get_client() -> AsyncOpenAI:
         _client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     return _client
 
+
 # Maximum pages to analyze in a single batch (to stay within token limits)
 MAX_PAGES_PER_BATCH = 5
 MAX_CONCURRENT_ANALYSIS_BATCHES = 3

@@ -36,12 +36,15 @@ from utils.crawl.models import CrawlQueueItem, QueryConstraints
 from utils.logger import logger
 
 SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
+SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_KEY")
 HTML_CACHE_TTL = int(os.getenv("HTML_CACHE_TTL_SECONDS", str(24 * 3600)))  # 24 hours
 
 
 def _looks_like_html(body: str) -> bool:
     sample = (body or "").lstrip().lower()
-    return sample.startswith("<!doctype html") or sample.startswith("<html") or "<html" in sample[:500]
+    return (
+        sample.startswith("<!doctype html") or sample.startswith("<html") or "<html" in sample[:500]
+    )
 
 
 def _is_bot_challenge(status: int, body: str) -> bool:
@@ -51,7 +54,12 @@ def _is_bot_challenge(status: int, body: str) -> bool:
     sample = (body or "").lower()
     return any(
         marker in sample
-        for marker in ("just a moment", "cf-browser-verification", "enable javascript", "checking your browser")
+        for marker in (
+            "just a moment",
+            "cf-browser-verification",
+            "enable javascript",
+            "checking your browser",
+        )
     )
 
 
@@ -82,6 +90,36 @@ def _requests_fetch(url: str, timeout: int) -> Optional[str]:
     return None
 
 
+def _scraperapi_fetch(url: str, timeout: int) -> Optional[str]:
+    """
+    Fetch via ScraperAPI to bypass bot-protection on cloud deployments.
+
+    Cloud platforms (Railway, Hugging Face, Render, etc.) use datacenter IPs
+    that Cloudflare blocks. ScraperAPI routes requests through residential IPs,
+    making university sites treat the request as a real browser visit.
+
+    Only called when SCRAPERAPI_KEY is set and direct fetches have failed.
+    """
+    if not SCRAPERAPI_KEY:
+        return None
+    try:
+        proxy_url = (
+            f"http://api.scraperapi.com"
+            f"?api_key={SCRAPERAPI_KEY}"
+            f"&url={requests.utils.quote(url, safe=':/?=&')}"
+            f"&render=false"
+        )
+        response = requests.get(proxy_url, timeout=timeout)
+        body = response.text
+        if response.ok and _is_html_response(response.headers.get("content-type", ""), body):
+            logger.debug("ScraperAPI hit: %s", url)
+            return body
+        logger.debug("ScraperAPI skipped %s: status=%s", url, response.status_code)
+    except Exception as exc:
+        logger.debug("ScraperAPI failed for %s: %s", url, exc)
+    return None
+
+
 # ── HTTP Fetch (with URL-level HTML cache) ─────────────────────────────────────
 
 
@@ -102,13 +140,19 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
         return cached_html
 
     try:
-        async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+        async with session.get(
+            url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=timeout)
+        ) as r:
             html = await r.text()
             if r.status == 200 and _is_html_response(r.headers.get("content-type", ""), html):
                 await cache.set(cache_key, html, HTML_CACHE_TTL)
                 return html
             if _is_bot_challenge(r.status, html):
-                logger.warning("⚠️  Bot protection detected for %s (status=%s) — site is blocking automated access", url, r.status)
+                logger.warning(
+                    "⚠️  Bot protection detected for %s (status=%s) — site is blocking automated access",
+                    url,
+                    r.status,
+                )
             else:
                 logger.debug(
                     "Skipping %s: status=%s content_type=%s",
@@ -120,6 +164,11 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
         logger.debug("Fetch failed for %s: %s", url, exc)
 
     html = await asyncio.to_thread(_requests_fetch, url, timeout)
+    if html is not None:
+        await cache.set(cache_key, html, HTML_CACHE_TTL)
+        return html
+
+    html = await asyncio.to_thread(_scraperapi_fetch, url, timeout)
     if html is not None:
         await cache.set(cache_key, html, HTML_CACHE_TTL)
         return html

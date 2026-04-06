@@ -184,9 +184,7 @@ def _build_messages(
             }
         )
     else:
-        messages.append(
-            {"role": "user", "content": [{"type": "input_text", "text": message}]}
-        )
+        messages.append({"role": "user", "content": [{"type": "input_text", "text": message}]})
     return messages
 
 
