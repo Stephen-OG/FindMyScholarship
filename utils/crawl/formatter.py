@@ -87,11 +87,19 @@ def _format_university_result(
     funding_pages_for_analysis = candidate_pages or filtered_funding_pages
 
     access_blocked = crawl_result.get("access_blocked", False)
+    crawl_timed_out = crawl_result.get("crawl_timed_out", False)
     if access_blocked:
         summary = (
             f"⚠️ Could not retrieve pages from {uni['domain']} — "
             "the site appears to block automated access (e.g. Cloudflare bot protection). "
             "Results for this university may be incomplete or unavailable. "
+            "Suggest the user visit the funding page directly."
+        )
+    elif crawl_timed_out:
+        summary = (
+            f"⚠️ Crawl timed out for {uni['domain']} — "
+            "the site was too slow to respond within the time limit. "
+            "Results for this university may be incomplete. "
             "Suggest the user visit the funding page directly."
         )
     else:
@@ -107,6 +115,7 @@ def _format_university_result(
         "candidate_pages": candidate_pages,
         "filtered_funding_pages": filtered_funding_pages,
         "access_blocked": access_blocked,
+        "crawl_timed_out": crawl_timed_out,
         "summary": summary,
         # Attach best score for cross-university ranking
         "_max_relevance_score": max(all_scores, default=0),

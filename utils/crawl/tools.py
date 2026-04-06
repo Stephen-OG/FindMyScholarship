@@ -97,11 +97,11 @@ async def crawl_universities_formatted(
                         max_results=effective_max_results,
                         min_relevance_score=min_relevance_score,
                     ),
-                    timeout=35,
+                    timeout=60,
                 )
             except asyncio.TimeoutError:
                 logger.warning("Crawl timed out for %s", uni["domain"])
-                result = {"funding_pages": [], "candidate_pages": []}
+                result = {"funding_pages": [], "candidate_pages": [], "crawl_timed_out": True}
             except Exception as exc:
                 logger.exception("Crawl failed for %s (%s): %s", uni["school"], uni["domain"], exc)
                 result = {"funding_pages": [], "candidate_pages": []}
