@@ -13,7 +13,7 @@ load_dotenv(override=True)
 with gr.Blocks() as demo:
     gr.Markdown("# 🎓 FindMyScholarship AI")
 
-    chatbot = gr.Chatbot(label="📋 Funding Search Results", height=500, type="messages")
+    chatbot = gr.Chatbot(label="📋 Funding Search Results", height=500)
     query = gr.Textbox(
         label="🔍 What funding are you looking for?",
         placeholder="e.g., PhD funding in machine learning at University of Exeter or UK universities",
@@ -48,6 +48,6 @@ with gr.Blocks() as demo:
 
 demo.launch(
     server_name=os.getenv("GRADIO_SERVER_NAME", "0.0.0.0"),
-    server_port=int(os.getenv("PORT", os.getenv("GRADIO_SERVER_PORT", "7860"))),
+    server_port=int(os.getenv("PORT", os.getenv("GRADIO_SERVER_PORT", "7860")))
     # theme=gr.themes.Soft(),
 )
