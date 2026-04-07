@@ -348,7 +348,11 @@ async def crawl_university(
         "candidate_pages": list(candidate_pages),
         "access_blocked": access_blocked,
     }
-    await _cache.set(cache_key, payload, CRAWL_TTL_SECONDS)
+    # Don't cache blocked results for the full TTL — the ScraperAPI key may not
+    # be set yet, or the site may become accessible after a short period.
+    # Retry after 10 minutes instead of serving stale empty results for 7 days.
+    ttl = 600 if access_blocked else CRAWL_TTL_SECONDS
+    await _cache.set(cache_key, payload, ttl)
     return payload
 
 

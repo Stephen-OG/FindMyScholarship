@@ -90,7 +90,7 @@ def _requests_fetch(url: str, timeout: int) -> Optional[str]:
     return None
 
 
-def _scraperapi_fetch(url: str, timeout: int) -> Optional[str]:
+def _scraperapi_fetch(url: str, timeout: int, render_js: bool = False) -> Optional[str]:
     """
     Fetch via ScraperAPI to bypass bot-protection on cloud deployments.
 
@@ -98,23 +98,26 @@ def _scraperapi_fetch(url: str, timeout: int) -> Optional[str]:
     that Cloudflare blocks. ScraperAPI routes requests through residential IPs,
     making university sites treat the request as a real browser visit.
 
+    render_js=True is required for Cloudflare JS-challenge pages — it instructs
+    ScraperAPI to execute JavaScript before returning the rendered HTML.
     Only called when SCRAPERAPI_KEY is set and direct fetches have failed.
     """
     if not SCRAPERAPI_KEY:
         return None
+    render_param = "true" if render_js else "false"
     try:
         proxy_url = (
             f"http://api.scraperapi.com"
             f"?api_key={SCRAPERAPI_KEY}"
             f"&url={requests.utils.quote(url, safe=':/?=&')}"
-            f"&render=false"
+            f"&render={render_param}"
         )
         response = requests.get(proxy_url, timeout=timeout)
         body = response.text
         if response.ok and _is_html_response(response.headers.get("content-type", ""), body):
-            logger.debug("ScraperAPI hit: %s", url)
+            logger.info("ScraperAPI hit (render=%s): %s", render_param, url)
             return body
-        logger.debug("ScraperAPI skipped %s: status=%s", url, response.status_code)
+        logger.debug("ScraperAPI skipped %s: status=%s render=%s", url, response.status_code, render_param)
     except Exception as exc:
         logger.debug("ScraperAPI failed for %s: %s", url, exc)
     return None
@@ -139,6 +142,7 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
         logger.debug("HTML cache hit: %s", url)
         return cached_html
 
+    bot_protected = False
     try:
         async with session.get(
             url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=timeout)
@@ -147,7 +151,8 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
             if r.status == 200 and _is_html_response(r.headers.get("content-type", ""), html):
                 await cache.set(cache_key, html, HTML_CACHE_TTL)
                 return html
-            if _is_bot_challenge(r.status, html):
+            if _is_bot_challenge(r.status, html) or r.status == 403:
+                bot_protected = True
                 logger.warning(
                     "⚠️  Bot protection detected for %s (status=%s) — site is blocking automated access",
                     url,
@@ -163,12 +168,17 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
     except Exception as exc:
         logger.debug("Fetch failed for %s: %s", url, exc)
 
-    html = await asyncio.to_thread(_requests_fetch, url, timeout)
-    if html is not None:
-        await cache.set(cache_key, html, HTML_CACHE_TTL)
-        return html
+    # Plain requests won't bypass Cloudflare — skip it for bot-protected sites.
+    if not bot_protected:
+        html = await asyncio.to_thread(_requests_fetch, url, timeout)
+        if html is not None:
+            await cache.set(cache_key, html, HTML_CACHE_TTL)
+            return html
 
-    html = await asyncio.to_thread(_scraperapi_fetch, url, timeout)
+    # For bot-protected sites use render=true so ScraperAPI executes JavaScript
+    # (needed to solve Cloudflare JS challenges). Allow extra time for rendering.
+    scraperapi_timeout = max(timeout, 60) if bot_protected else timeout
+    html = await asyncio.to_thread(_scraperapi_fetch, url, scraperapi_timeout, render_js=bot_protected)
     if html is not None:
         await cache.set(cache_key, html, HTML_CACHE_TTL)
         return html
