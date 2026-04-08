@@ -3,6 +3,7 @@ import re as _re
 from typing import Any, AsyncIterator, Optional
 
 from agents import Agent, RunHooks, Runner, handoff
+from openai import AsyncOpenAI
 
 from scholarship_agents.explorer_agent import explorer_agent
 from scholarship_agents.school_domain_agent import search_agent
@@ -10,6 +11,16 @@ from utils.analyzer import analyze_crawler_results
 from utils.crawl import crawl_universities_formatted
 from utils.keyword_extractor import extract_query_keywords
 from utils.logger import logger
+
+_openai_client: AsyncOpenAI | None = None
+
+
+def _get_openai_client() -> AsyncOpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = AsyncOpenAI()
+    return _openai_client
+
 
 logger.info("Starting scholarship agent")
 
@@ -271,6 +282,91 @@ def _is_followup(history) -> bool:
     return False
 
 
+_CLASSIFY_SYSTEM = """\
+You are an intent classifier for a scholarship-search assistant.
+
+Respond with exactly one word — either SEARCH or GENERAL — with no punctuation or explanation.
+
+SEARCH  → the user wants to find, look up, or apply for a specific scholarship, grant,
+           fellowship, or funding opportunity at a real university or in a real programme.
+           Examples: "PhD funding in AI at Oxford", "find masters scholarships in Canada",
+           "scholarships for international students in UK", "apply for Chevening".
+
+GENERAL → the user is asking a factual/informational question, wants advice, or is making
+           small talk that does NOT require crawling university websites right now.
+           Examples: "top research topics with good funding", "list universities in Sweden",
+           "what GPA do I need for Harvard?", "how do I write a personal statement?",
+           "which fields pay well?", "tell me about STEM funding trends".
+
+When in doubt, prefer GENERAL.\
+"""
+
+
+async def _classify_intent(message: str) -> bool:
+    """
+    Return True if the message is a scholarship/funding *search* request.
+    Uses a single cheap LLM call; falls back to False (general) on error.
+    """
+    try:
+        resp = await _get_openai_client().chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _CLASSIFY_SYSTEM},
+                {"role": "user", "content": message},
+            ],
+            max_tokens=5,
+            temperature=0,
+        )
+        label = resp.choices[0].message.content.strip().upper()
+        logger.debug("Intent classification: %r → %s", message[:80], label)
+        return label == "SEARCH"
+    except Exception as exc:
+        logger.warning("Intent classification failed (%s) — defaulting to GENERAL", exc)
+        return False
+
+
+async def _answer_general_query(message: str, history) -> AsyncIterator[str]:
+    """
+    Handle non-scholarship queries with a direct LLM call.
+
+    Yields the answer incrementally (streaming) without triggering the
+    agent pipeline (no domain lookup, no crawl, no analysis).
+    """
+    system_msg = (
+        "You are FindMyScholarship AI, a helpful assistant for students. "
+        "Answer the user's question clearly and concisely. "
+        "If the question is about universities or education, provide accurate information. "
+        "If the user wants to search for scholarships or funding, let them know they can "
+        "describe what they're looking for and you'll search for opportunities."
+    )
+    messages = [{"role": "system", "content": system_msg}]
+    for turn in history:
+        if isinstance(turn, (list, tuple)) and len(turn) >= 2:
+            if turn[0]:
+                messages.append({"role": "user", "content": str(turn[0])})
+            if turn[1]:
+                messages.append({"role": "assistant", "content": str(turn[1])})
+        elif isinstance(turn, dict):
+            role = turn.get("role")
+            content = turn.get("content") or ""
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": str(content)})
+    messages.append({"role": "user", "content": message})
+
+    accumulated = ""
+    stream = await _get_openai_client().chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        stream=True,
+        temperature=0.5,
+    )
+    async for chunk in stream:
+        delta = chunk.choices[0].delta.content or ""
+        if delta:
+            accumulated += delta
+            yield accumulated
+
+
 async def chat_stream(message: str, history) -> AsyncIterator[str]:
     """
     Streaming version of chat().
@@ -286,6 +382,14 @@ async def chat_stream(message: str, history) -> AsyncIterator[str]:
     guaranteeing a single LLM extraction call per query regardless of whether
     the model remembers to forward the parameter.
     """
+    # Short-circuit: general informational queries are answered directly without
+    # triggering the domain-search / crawl pipeline.
+    if not _is_followup(history) and not await _classify_intent(message):
+        logger.info("No scholarship intent detected — answering directly (no agent pipeline)")
+        async for partial in _answer_general_query(message, history):
+            yield partial
+        return
+
     # A message that looks like a new search always runs the full pipeline,
     # even when prior results exist in history.
     is_followup = _is_followup(history) and not _is_new_search(message)
