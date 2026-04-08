@@ -123,6 +123,7 @@ This project is fully compatible with Hugging Face Spaces (Gradio SDK).
 3. Add secrets:
    * `OPENAI_API_KEY`
    * `SERPAPI_API_KEY`
+   * `SERPAPI_API_KEY`
 4. Restart the Space
 
 The app will be live within seconds.
