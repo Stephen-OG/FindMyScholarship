@@ -39,6 +39,13 @@ SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
 SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_KEY")
 HTML_CACHE_TTL = int(os.getenv("HTML_CACHE_TTL_SECONDS", str(24 * 3600)))  # 24 hours
 
+if SCRAPERAPI_KEY:
+    logger.info("ScraperAPI: key loaded ✓ (bot-protected sites will use render=true)")
+else:
+    logger.warning(
+        "ScraperAPI: SCRAPERAPI_KEY not set — bot-protected sites will return no results"
+    )
+
 
 def _looks_like_html(body: str) -> bool:
     sample = (body or "").lstrip().lower()
@@ -117,7 +124,9 @@ def _scraperapi_fetch(url: str, timeout: int, render_js: bool = False) -> Option
         if response.ok and _is_html_response(response.headers.get("content-type", ""), body):
             logger.info("ScraperAPI hit (render=%s): %s", render_param, url)
             return body
-        logger.debug("ScraperAPI skipped %s: status=%s render=%s", url, response.status_code, render_param)
+        logger.debug(
+            "ScraperAPI skipped %s: status=%s render=%s", url, response.status_code, render_param
+        )
     except Exception as exc:
         logger.debug("ScraperAPI failed for %s: %s", url, exc)
     return None
@@ -178,7 +187,9 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
     # For bot-protected sites use render=true so ScraperAPI executes JavaScript
     # (needed to solve Cloudflare JS challenges). Allow extra time for rendering.
     scraperapi_timeout = max(timeout, 60) if bot_protected else timeout
-    html = await asyncio.to_thread(_scraperapi_fetch, url, scraperapi_timeout, render_js=bot_protected)
+    html = await asyncio.to_thread(
+        _scraperapi_fetch, url, scraperapi_timeout, render_js=bot_protected
+    )
     if html is not None:
         await cache.set(cache_key, html, HTML_CACHE_TTL)
         return html
