@@ -36,15 +36,7 @@ from utils.crawl.models import CrawlQueueItem, QueryConstraints
 from utils.logger import logger
 
 SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
-FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "").rstrip("/")
 HTML_CACHE_TTL = int(os.getenv("HTML_CACHE_TTL_SECONDS", str(24 * 3600)))  # 24 hours
-
-if FLARESOLVERR_URL:
-    logger.info("FlareSolverr: endpoint configured ✓ (%s)", FLARESOLVERR_URL)
-else:
-    logger.warning(
-        "FlareSolverr: FLARESOLVERR_URL not set — bot-protected sites will return no results"
-    )
 
 
 def _looks_like_html(body: str) -> bool:
@@ -97,46 +89,54 @@ def _requests_fetch(url: str, timeout: int) -> Optional[str]:
     return None
 
 
-def _flaresolverr_fetch(url: str, timeout: int) -> Optional[str]:
+async def _playwright_fetch(url: str, timeout: int) -> Optional[str]:
     """
-    Fetch via FlareSolverr to bypass Cloudflare and other bot-protection on
-    cloud deployments.
+    Fetch via a headless Chromium browser (Playwright) to bypass Cloudflare
+    and other bot-protection that blocks datacenter IPs.
 
-    FlareSolverr runs a real Chrome browser behind the scenes, solving JS
-    challenges before returning the rendered HTML. It is self-hosted and free.
-
-    Set FLARESOLVERR_URL to the base URL of your FlareSolverr instance,
-    e.g. https://flaresolverr.example.com (no trailing slash).
-    Only called when FLARESOLVERR_URL is set and direct fetches have failed.
+    Playwright renders JavaScript fully before returning HTML, solving JS
+    challenges the same way FlareSolverr does — but inline, with no external
+    service required. Only called when direct fetches have failed.
     """
-    if not FLARESOLVERR_URL:
-        return None
     try:
-        payload = {
-            "cmd": "request.get",
-            "url": url,
-            "maxTimeout": timeout * 1000,  # FlareSolverr expects milliseconds
-        }
-        response = requests.post(
-            f"{FLARESOLVERR_URL}/v1",
-            json=payload,
-            timeout=timeout + 10,  # slightly longer than the inner maxTimeout
-        )
-        data = response.json()
-        if data.get("status") == "ok":
-            solution = data.get("solution", {})
-            body = solution.get("response", "")
-            status = solution.get("status", 0)
-            if status == 200 and body and _looks_like_html(body):
-                logger.info("FlareSolverr hit: %s", url)
-                return body
-            logger.debug(
-                "FlareSolverr returned non-200 for %s: status=%s", url, status
+        from playwright.async_api import async_playwright
+    except ImportError:
+        logger.warning("Playwright not installed — cannot bypass bot protection")
+        return None
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
             )
-        else:
-            logger.debug("FlareSolverr error for %s: %s", url, data.get("message", "unknown"))
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                java_script_enabled=True,
+            )
+            page = await context.new_page()
+            # Hide webdriver flag that bot-detection scripts look for
+            await page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            await page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+            # Wait a moment for JS challenges to resolve
+            await page.wait_for_timeout(2000)
+            html = await page.content()
+            await browser.close()
+            if html and _looks_like_html(html):
+                logger.info("Playwright hit: %s", url)
+                return html
     except Exception as exc:
-        logger.debug("FlareSolverr failed for %s: %s", url, exc)
+        logger.debug("Playwright failed for %s: %s", url, exc)
     return None
 
 
@@ -192,10 +192,10 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
             await cache.set(cache_key, html, HTML_CACHE_TTL)
             return html
 
-    # For bot-protected sites route through FlareSolverr, which runs a real
-    # Chrome browser to solve Cloudflare JS challenges. Allow extra time for rendering.
-    flaresolverr_timeout = max(timeout, 60) if bot_protected else timeout
-    html = await asyncio.to_thread(_flaresolverr_fetch, url, flaresolverr_timeout)
+    # For bot-protected sites use Playwright (headless Chromium) to solve
+    # Cloudflare JS challenges. Allow extra time for rendering.
+    playwright_timeout = max(timeout, 60) if bot_protected else timeout
+    html = await _playwright_fetch(url, playwright_timeout)
     if html is not None:
         await cache.set(cache_key, html, HTML_CACHE_TTL)
         return html

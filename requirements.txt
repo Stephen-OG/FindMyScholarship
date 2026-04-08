@@ -13,3 +13,4 @@ uvicorn
 serpapi
 aiosqlite
 redis
+playwright
