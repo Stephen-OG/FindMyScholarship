@@ -12,7 +12,7 @@ Metrics computed per case and overall:
     crawl_hit    — fraction of expected_pages that appeared in crawl results
     pipeline_ok  — did the pipeline complete without error (always 0/1)
 
-Usage (full pipeline — needs OPENAI_API_KEY + SERPAPI_API_KEY + SCRAPERAPI_KEY):
+Usage (full pipeline — needs OPENAI_API_KEY + SERPAPI_API_KEY + FLARESOLVERR_URL):
     python -m eval.harness
 
 Usage (cache-only — skips live API calls, uses cached results):

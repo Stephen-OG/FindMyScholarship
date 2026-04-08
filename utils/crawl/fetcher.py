@@ -36,14 +36,14 @@ from utils.crawl.models import CrawlQueueItem, QueryConstraints
 from utils.logger import logger
 
 SERPAPI_KEY = os.getenv("SERPAPI_API_KEY")
-SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_KEY")
+FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "").rstrip("/")
 HTML_CACHE_TTL = int(os.getenv("HTML_CACHE_TTL_SECONDS", str(24 * 3600)))  # 24 hours
 
-if SCRAPERAPI_KEY:
-    logger.info("ScraperAPI: key loaded ✓ (bot-protected sites will use render=true)")
+if FLARESOLVERR_URL:
+    logger.info("FlareSolverr: endpoint configured ✓ (%s)", FLARESOLVERR_URL)
 else:
     logger.warning(
-        "ScraperAPI: SCRAPERAPI_KEY not set — bot-protected sites will return no results"
+        "FlareSolverr: FLARESOLVERR_URL not set — bot-protected sites will return no results"
     )
 
 
@@ -97,38 +97,46 @@ def _requests_fetch(url: str, timeout: int) -> Optional[str]:
     return None
 
 
-def _scraperapi_fetch(url: str, timeout: int, render_js: bool = False) -> Optional[str]:
+def _flaresolverr_fetch(url: str, timeout: int) -> Optional[str]:
     """
-    Fetch via ScraperAPI to bypass bot-protection on cloud deployments.
+    Fetch via FlareSolverr to bypass Cloudflare and other bot-protection on
+    cloud deployments.
 
-    Cloud platforms (Railway, Hugging Face, Render, etc.) use datacenter IPs
-    that Cloudflare blocks. ScraperAPI routes requests through residential IPs,
-    making university sites treat the request as a real browser visit.
+    FlareSolverr runs a real Chrome browser behind the scenes, solving JS
+    challenges before returning the rendered HTML. It is self-hosted and free.
 
-    render_js=True is required for Cloudflare JS-challenge pages — it instructs
-    ScraperAPI to execute JavaScript before returning the rendered HTML.
-    Only called when SCRAPERAPI_KEY is set and direct fetches have failed.
+    Set FLARESOLVERR_URL to the base URL of your FlareSolverr instance,
+    e.g. https://flaresolverr.example.com (no trailing slash).
+    Only called when FLARESOLVERR_URL is set and direct fetches have failed.
     """
-    if not SCRAPERAPI_KEY:
+    if not FLARESOLVERR_URL:
         return None
-    render_param = "true" if render_js else "false"
     try:
-        proxy_url = (
-            f"http://api.scraperapi.com"
-            f"?api_key={SCRAPERAPI_KEY}"
-            f"&url={requests.utils.quote(url, safe=':/?=&')}"
-            f"&render={render_param}"
+        payload = {
+            "cmd": "request.get",
+            "url": url,
+            "maxTimeout": timeout * 1000,  # FlareSolverr expects milliseconds
+        }
+        response = requests.post(
+            f"{FLARESOLVERR_URL}/v1",
+            json=payload,
+            timeout=timeout + 10,  # slightly longer than the inner maxTimeout
         )
-        response = requests.get(proxy_url, timeout=timeout)
-        body = response.text
-        if response.ok and _is_html_response(response.headers.get("content-type", ""), body):
-            logger.info("ScraperAPI hit (render=%s): %s", render_param, url)
-            return body
-        logger.debug(
-            "ScraperAPI skipped %s: status=%s render=%s", url, response.status_code, render_param
-        )
+        data = response.json()
+        if data.get("status") == "ok":
+            solution = data.get("solution", {})
+            body = solution.get("response", "")
+            status = solution.get("status", 0)
+            if status == 200 and body and _looks_like_html(body):
+                logger.info("FlareSolverr hit: %s", url)
+                return body
+            logger.debug(
+                "FlareSolverr returned non-200 for %s: status=%s", url, status
+            )
+        else:
+            logger.debug("FlareSolverr error for %s: %s", url, data.get("message", "unknown"))
     except Exception as exc:
-        logger.debug("ScraperAPI failed for %s: %s", url, exc)
+        logger.debug("FlareSolverr failed for %s: %s", url, exc)
     return None
 
 
@@ -184,12 +192,10 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
             await cache.set(cache_key, html, HTML_CACHE_TTL)
             return html
 
-    # For bot-protected sites use render=true so ScraperAPI executes JavaScript
-    # (needed to solve Cloudflare JS challenges). Allow extra time for rendering.
-    scraperapi_timeout = max(timeout, 60) if bot_protected else timeout
-    html = await asyncio.to_thread(
-        _scraperapi_fetch, url, scraperapi_timeout, render_js=bot_protected
-    )
+    # For bot-protected sites route through FlareSolverr, which runs a real
+    # Chrome browser to solve Cloudflare JS challenges. Allow extra time for rendering.
+    flaresolverr_timeout = max(timeout, 60) if bot_protected else timeout
+    html = await asyncio.to_thread(_flaresolverr_fetch, url, flaresolverr_timeout)
     if html is not None:
         await cache.set(cache_key, html, HTML_CACHE_TTL)
         return html
