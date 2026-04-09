@@ -1,5 +1,4 @@
 import asyncio
-import re as _re
 from typing import Any, AsyncIterator, Optional
 
 from agents import Agent, RunHooks, Runner, handoff
@@ -12,6 +11,7 @@ from utils.crawl import crawl_universities_formatted
 from utils.keyword_extractor import extract_query_keywords
 from utils.logger import logger
 
+# Deferred so it's created after load_dotenv() runs in app.py.
 _openai_client: AsyncOpenAI | None = None
 
 
@@ -199,130 +199,87 @@ def _build_messages(
     return messages
 
 
-# Minimum number of distinct funding terms that must appear in an assistant message
-# for it to be treated as a completed search result (vs. error / clarifying question).
-_FUNDING_VOCABULARY = frozenset(
-    {
-        "scholarship",
-        "studentship",
-        "fellowship",
-        "bursary",
-        "grant",
-        "stipend",
-        "tuition",
-        "funded",
-        "funding",
-        "phd",
-        "doctoral",
-        "masters",
-        "postdoctoral",
-        "assistantship",
-    }
-)
-_FOLLOWUP_MIN_LENGTH = 400
-_FOLLOWUP_MIN_MARKERS = 3
+_ROUTE_SYSTEM = """\
+You are a router for a scholarship-search assistant.
+Classify the user's message into exactly one of three labels — no punctuation, no explanation.
 
-# Patterns that signal the user wants a NEW search, not a refinement.
-# Matched against the incoming message (lowercased) before _is_followup runs.
-_NEW_SEARCH_PATTERNS = _re.compile(
-    r"""
-    \b(university|college|institute|school)\s+of\b   # "university of X"
-    | \bat\s+(university|college|the\s+university)\b  # "at the university"
-    | \b(search|find|look)\s+(for|up|at)\b            # "search for", "find funding"
-    | \bsame\s+\w+\s+(in|at|for)\b                   # "same topic in X"
-    | \bwhat\s+about\b(?=\s+(university|college|[A-Z][a-z]+\s+university))  # "what about Oxford"
-    | \bhow\s+about\b(?=\s+(university|college|[A-Z][a-z]+\s+university))   # "how about MIT"
-    | \balso\s+(check|search|look)\b                  # "also check X"
-    | \binstead\b                                     # "search X instead"
-    | \banother\s+university\b                        # "another university"
-    | \bdifferent\s+university\b                      # "different university"
-    """,
-    _re.VERBOSE | _re.IGNORECASE,
-)
+SEARCH   → user wants to find/look up scholarships, grants, fellowships, or funding at
+           a university or programme (triggers a live crawl).
+           Examples: "PhD funding in AI at Oxford", "masters scholarships in Canada",
+           "find funding at University of Exeter", "apply for Chevening".
+
+FOLLOWUP → user is asking about, filtering, or comparing results already shown in this
+           conversation. Only valid when prior_results=true.
+           Examples: "show me only fully funded ones", "what about computer science?",
+           "compare these two", "tell me more about the first one".
+
+GENERAL  → anything else: factual questions, advice, small talk, topic overviews.
+           Examples: "list top universities in Sweden", "top research topics with good funding",
+           "what GPA do I need?", "how do I write a personal statement?".
+
+When in doubt between FOLLOWUP and SEARCH, prefer SEARCH.
+When in doubt between SEARCH and GENERAL, prefer GENERAL.\
+"""
 
 
-def _is_new_search(message: str) -> bool:
+async def _classify_route(message: str, has_prior_results: bool) -> str:
     """
-    Returns True when the incoming message looks like a new search request
-    rather than a follow-up question about already-returned results.
+    Return one of 'SEARCH' | 'FOLLOWUP' | 'GENERAL'.
 
-    This overrides _is_followup so the full pipeline runs even when results
-    already exist in history. Examples that trigger this:
-      - "same research topic in university of alabama"
-      - "what about Oxford instead?"
-      - "search for PhD funding at Cambridge"
-      - "find funding at another university"
+    A single cheap LLM call replaces the previous three-function chain
+    (_classify_intent + _is_new_search + _is_followup). The has_prior_results
+    flag is passed as context so FOLLOWUP is only ever returned when there is
+    actually something in history to follow up on.
+
+    Falls back to 'SEARCH' on error so we never silently drop a real search.
     """
-    return bool(_NEW_SEARCH_PATTERNS.search(message))
+    context = f"prior_results={str(has_prior_results).lower()}\n\nUser: {message}"
+    try:
+        resp = await _get_openai_client().chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _ROUTE_SYSTEM},
+                {"role": "user", "content": context},
+            ],
+            max_tokens=5,
+            temperature=0,
+        )
+        label = resp.choices[0].message.content.strip().upper()
+        if label not in ("SEARCH", "FOLLOWUP", "GENERAL"):
+            logger.warning("Unexpected route label %r — defaulting to SEARCH", label)
+            return "SEARCH"
+        logger.info("Route: %s (prior_results=%s) — %r", label, has_prior_results, message[:80])
+        return label
+    except Exception as exc:
+        logger.warning("Route classification failed (%s) — defaulting to SEARCH", exc)
+        return "SEARCH"
 
 
-def _is_followup(history) -> bool:
+def _has_prior_results(history) -> bool:
     """
-    Returns True only when a *completed* funding search result exists in history.
+    True when history contains a completed funding search response.
 
-    Two signals must both be true for any assistant message:
-    1. Length > _FOLLOWUP_MIN_LENGTH  — rules out short errors and status strings
-    2. >= _FOLLOWUP_MIN_MARKERS distinct funding terms — rules out long clarifying
-       questions, timeout messages, and tool-limit notices (none contain 3+ terms)
-
-    This prevents the explorer agent from being activated prematurely when the
-    search pipeline hasn't actually run yet.
+    Uses two signals on each assistant message to filter out short errors,
+    status strings, and clarifying questions:
+    1. Length > 400 chars
+    2. At least 3 distinct funding-domain terms present
     """
+    _FUNDING_TERMS = frozenset({
+        "scholarship", "studentship", "fellowship", "bursary", "grant",
+        "stipend", "tuition", "funded", "funding", "phd", "doctoral",
+        "masters", "postdoctoral", "assistantship",
+    })
     for turn in history:
         ai_msg = None
         if isinstance(turn, (list, tuple)) and len(turn) >= 2:
             ai_msg = turn[1]
         elif isinstance(turn, dict) and turn.get("role") == "assistant":
             ai_msg = turn.get("content", "")
-        if not ai_msg or len(str(ai_msg)) < _FOLLOWUP_MIN_LENGTH:
+        if not ai_msg or len(str(ai_msg)) < 400:
             continue
-        text = str(ai_msg).lower()
-        if sum(1 for term in _FUNDING_VOCABULARY if term in text) >= _FOLLOWUP_MIN_MARKERS:
+        if sum(1 for t in _FUNDING_TERMS if t in str(ai_msg).lower()) >= 3:
             return True
     return False
-
-
-_CLASSIFY_SYSTEM = """\
-You are an intent classifier for a scholarship-search assistant.
-
-Respond with exactly one word — either SEARCH or GENERAL — with no punctuation or explanation.
-
-SEARCH  → the user wants to find, look up, or apply for a specific scholarship, grant,
-           fellowship, or funding opportunity at a real university or in a real programme.
-           Examples: "PhD funding in AI at Oxford", "find masters scholarships in Canada",
-           "scholarships for international students in UK", "apply for Chevening".
-
-GENERAL → the user is asking a factual/informational question, wants advice, or is making
-           small talk that does NOT require crawling university websites right now.
-           Examples: "top research topics with good funding", "list universities in Sweden",
-           "what GPA do I need for Harvard?", "how do I write a personal statement?",
-           "which fields pay well?", "tell me about STEM funding trends".
-
-When in doubt, prefer GENERAL.\
-"""
-
-
-async def _classify_intent(message: str) -> bool:
-    """
-    Return True if the message is a scholarship/funding *search* request.
-    Uses a single cheap LLM call; falls back to False (general) on error.
-    """
-    try:
-        resp = await _get_openai_client().chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _CLASSIFY_SYSTEM},
-                {"role": "user", "content": message},
-            ],
-            max_tokens=5,
-            temperature=0,
-        )
-        label = resp.choices[0].message.content.strip().upper()
-        logger.debug("Intent classification: %r → %s", message[:80], label)
-        return label == "SEARCH"
-    except Exception as exc:
-        logger.warning("Intent classification failed (%s) — defaulting to GENERAL", exc)
-        return False
 
 
 async def _answer_general_query(message: str, history) -> AsyncIterator[str]:
@@ -382,21 +339,18 @@ async def chat_stream(message: str, history) -> AsyncIterator[str]:
     guaranteeing a single LLM extraction call per query regardless of whether
     the model remembers to forward the parameter.
     """
-    # Short-circuit: general informational queries are answered directly without
-    # triggering the domain-search / crawl pipeline.
-    if not _is_followup(history) and not await _classify_intent(message):
-        logger.info("No scholarship intent detected — answering directly (no agent pipeline)")
+    route = await _classify_route(message, _has_prior_results(history))
+
+    if route == "GENERAL":
         async for partial in _answer_general_query(message, history):
             yield partial
         return
 
-    # A message that looks like a new search always runs the full pipeline,
-    # even when prior results exist in history.
-    is_followup = _is_followup(history) and not _is_new_search(message)
+    is_followup = route == "FOLLOWUP"
     active_agent = explorer_agent if is_followup else scholarship_agent
 
-    # Pre-extract keywords once for new searches so crawler + analyzer reuse them.
-    # Explorer queries skip this — they don't call any tools.
+    # Pre-extract keywords once for SEARCH so crawler + analyzer reuse them.
+    # FOLLOWUP skips this — explorer has no tools.
     extracted_keywords: list[str] = []
     if not is_followup:
         try:
@@ -410,14 +364,10 @@ async def chat_stream(message: str, history) -> AsyncIterator[str]:
         message, history, use_explorer=is_followup, keywords=extracted_keywords
     )
     progress_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
-    # Explorer has no tools so the guard is only needed for the search agent
     guard = ToolCallGuard(progress_queue=progress_queue) if not is_followup else None
 
     _SENTINEL = object()
     accumulated_status: list[str] = []
-
-    if is_followup:
-        logger.info("Follow-up detected — routing to Results Explorer (no crawl)")
 
     async def _run_agent():
         try:

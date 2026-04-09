@@ -7,6 +7,7 @@ the same URL within or across sessions doesn't re-hit the network.
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Set
 from urllib.parse import urljoin
 
@@ -103,94 +104,77 @@ _PLAYWRIGHT_LAUNCH_ARGS = [
 _PLAYWRIGHT_CONCURRENCY = 4
 
 
-async def create_playwright_browser():
+@asynccontextmanager
+async def playwright_browser():
     """
-    Launch a shared headless Chromium browser for the duration of a crawl.
+    Async context manager that yields a shared headless Chromium browser.
+    Yields None if Playwright is not installed — callers must handle that.
 
     Usage in engine.py:
-        browser, pw = await create_playwright_browser()
-        try:
-            ...pass browser to fetch()...
-        finally:
-            await browser.close()
-            await pw.stop()
+        async with playwright_browser() as browser:
+            semaphore = asyncio.Semaphore(_PLAYWRIGHT_CONCURRENCY) if browser else None
+            ...pass browser and semaphore to fetch()...
     """
     try:
         from playwright.async_api import async_playwright
     except ImportError:
         logger.warning("Playwright not installed — bot-protected sites will not be fetched")
-        return None, None
+        yield None
+        return
 
-    pw = await async_playwright().start()
-    browser = await pw.chromium.launch(headless=True, args=_PLAYWRIGHT_LAUNCH_ARGS)
-    return browser, pw
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True, args=_PLAYWRIGHT_LAUNCH_ARGS)
+        try:
+            yield browser
+        finally:
+            await browser.close()
 
 
 async def _playwright_fetch(
     url: str,
     timeout: int,
-    browser=None,
+    browser,
     semaphore: Optional[asyncio.Semaphore] = None,
 ) -> Optional[str]:
     """
-    Fetch a URL using a headless Chromium page, bypassing Cloudflare and other
-    bot-protection that blocks datacenter IPs.
+    Fetch a URL using a page from the shared Chromium browser, bypassing
+    Cloudflare and other bot-protection that blocks datacenter IPs.
 
-    Accepts a shared `browser` (created once per crawl session via
-    create_playwright_browser) so Chrome only launches once per crawl.
-    Falls back to creating a standalone browser when none is supplied.
+    `browser` must be a live Browser instance from playwright_browser().
+    Returns None immediately if browser is None (Playwright not installed).
     """
-    _own_browser = False
-    pw_handle = None
+    if browser is None:
+        return None
+
+    async def _fetch_page() -> Optional[str]:
+        context = await browser.new_context(
+            user_agent=_PLAYWRIGHT_USER_AGENT,
+            java_script_enabled=True,
+        )
+        page = await context.new_page()
+        await page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        try:
+            await page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(2000)
+            html = await page.content()
+            return html if html and _looks_like_html(html) else None
+        finally:
+            await context.close()
 
     try:
-        if browser is None or not browser.is_connected():
-            try:
-                from playwright.async_api import async_playwright
-            except ImportError:
-                logger.warning("Playwright not installed — cannot bypass bot protection")
-                return None
-            pw_handle = await async_playwright().start()
-            browser = await pw_handle.chromium.launch(
-                headless=True, args=_PLAYWRIGHT_LAUNCH_ARGS
-            )
-            _own_browser = True
-
-        async def _fetch_page() -> Optional[str]:
-            context = await browser.new_context(
-                user_agent=_PLAYWRIGHT_USER_AGENT,
-                java_script_enabled=True,
-            )
-            page = await context.new_page()
-            await page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
-            try:
-                await page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
-                await page.wait_for_timeout(2000)
-                html = await page.content()
-                return html if html and _looks_like_html(html) else None
-            finally:
-                await context.close()
-
         if semaphore is not None:
             async with semaphore:
                 html = await _fetch_page()
         else:
             html = await _fetch_page()
-
         if html:
             logger.info("Playwright hit: %s", url)
         return html
-
     except Exception as exc:
         logger.debug("Playwright failed for %s: %s", url, exc)
         return None
-    finally:
-        if _own_browser and browser is not None:
-            await browser.close()
-        if pw_handle is not None:
-            await pw_handle.stop()
 
 
 # ── HTTP Fetch (with URL-level HTML cache) ─────────────────────────────────────
