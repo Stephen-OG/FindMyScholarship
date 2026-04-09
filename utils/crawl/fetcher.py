@@ -89,67 +89,130 @@ def _requests_fetch(url: str, timeout: int) -> Optional[str]:
     return None
 
 
-async def _playwright_fetch(url: str, timeout: int) -> Optional[str]:
-    """
-    Fetch via a headless Chromium browser (Playwright) to bypass Cloudflare
-    and other bot-protection that blocks datacenter IPs.
+_PLAYWRIGHT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+_PLAYWRIGHT_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled",
+]
+# Max concurrent Playwright pages per browser to cap memory usage.
+_PLAYWRIGHT_CONCURRENCY = 4
 
-    Playwright renders JavaScript fully before returning HTML, solving JS
-    challenges the same way FlareSolverr does — but inline, with no external
-    service required. Only called when direct fetches have failed.
+
+async def create_playwright_browser():
+    """
+    Launch a shared headless Chromium browser for the duration of a crawl.
+
+    Usage in engine.py:
+        browser, pw = await create_playwright_browser()
+        try:
+            ...pass browser to fetch()...
+        finally:
+            await browser.close()
+            await pw.stop()
     """
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        logger.warning("Playwright not installed — cannot bypass bot protection")
-        return None
+        logger.warning("Playwright not installed — bot-protected sites will not be fetched")
+        return None, None
+
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(headless=True, args=_PLAYWRIGHT_LAUNCH_ARGS)
+    return browser, pw
+
+
+async def _playwright_fetch(
+    url: str,
+    timeout: int,
+    browser=None,
+    semaphore: Optional[asyncio.Semaphore] = None,
+) -> Optional[str]:
+    """
+    Fetch a URL using a headless Chromium page, bypassing Cloudflare and other
+    bot-protection that blocks datacenter IPs.
+
+    Accepts a shared `browser` (created once per crawl session via
+    create_playwright_browser) so Chrome only launches once per crawl.
+    Falls back to creating a standalone browser when none is supplied.
+    """
+    _own_browser = False
+    pw_handle = None
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                ],
+        if browser is None or not browser.is_connected():
+            try:
+                from playwright.async_api import async_playwright
+            except ImportError:
+                logger.warning("Playwright not installed — cannot bypass bot protection")
+                return None
+            pw_handle = await async_playwright().start()
+            browser = await pw_handle.chromium.launch(
+                headless=True, args=_PLAYWRIGHT_LAUNCH_ARGS
             )
+            _own_browser = True
+
+        async def _fetch_page() -> Optional[str]:
             context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
+                user_agent=_PLAYWRIGHT_USER_AGENT,
                 java_script_enabled=True,
             )
             page = await context.new_page()
-            # Hide webdriver flag that bot-detection scripts look for
             await page.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
-            await page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
-            # Wait a moment for JS challenges to resolve
-            await page.wait_for_timeout(2000)
-            html = await page.content()
-            await browser.close()
-            if html and _looks_like_html(html):
-                logger.info("Playwright hit: %s", url)
-                return html
+            try:
+                await page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+                await page.wait_for_timeout(2000)
+                html = await page.content()
+                return html if html and _looks_like_html(html) else None
+            finally:
+                await context.close()
+
+        if semaphore is not None:
+            async with semaphore:
+                html = await _fetch_page()
+        else:
+            html = await _fetch_page()
+
+        if html:
+            logger.info("Playwright hit: %s", url)
+        return html
+
     except Exception as exc:
         logger.debug("Playwright failed for %s: %s", url, exc)
-    return None
+        return None
+    finally:
+        if _own_browser and browser is not None:
+            await browser.close()
+        if pw_handle is not None:
+            await pw_handle.stop()
 
 
 # ── HTTP Fetch (with URL-level HTML cache) ─────────────────────────────────────
 
 
-async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> Optional[str]:
+async def fetch(
+    session: aiohttp.ClientSession,
+    url: str,
+    timeout: int = 15,
+    browser=None,
+    pw_semaphore: Optional[asyncio.Semaphore] = None,
+) -> Optional[str]:
     """
     Fetch a single URL and return its HTML, or None on failure.
 
     Checks the persistent cache first (key: ``html:<url>``).  On a live fetch,
     successful HTML responses are stored for HTML_CACHE_TTL seconds so the same
     page is never downloaded twice — even across server restarts.
+
+    Pass `browser` (from create_playwright_browser) and `pw_semaphore` to reuse
+    a single Chromium instance across the crawl instead of launching a new one
+    per bot-protected URL.
     """
     cache_key = f"html:{url}"
     cache = get_cache()
@@ -192,10 +255,10 @@ async def fetch(session: aiohttp.ClientSession, url: str, timeout: int = 15) -> 
             await cache.set(cache_key, html, HTML_CACHE_TTL)
             return html
 
-    # For bot-protected sites use Playwright (headless Chromium) to solve
-    # Cloudflare JS challenges. Allow extra time for rendering.
+    # For bot-protected sites use the shared Playwright browser (headless Chromium)
+    # to solve Cloudflare JS challenges. Allow extra time for JS rendering.
     playwright_timeout = max(timeout, 60) if bot_protected else timeout
-    html = await _playwright_fetch(url, playwright_timeout)
+    html = await _playwright_fetch(url, playwright_timeout, browser=browser, semaphore=pw_semaphore)
     if html is not None:
         await cache.set(cache_key, html, HTML_CACHE_TTL)
         return html

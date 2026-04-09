@@ -20,6 +20,8 @@ from utils.crawl._utils import (
     sanitize_text_for_llm,
 )
 from utils.crawl.fetcher import (
+    _PLAYWRIGHT_CONCURRENCY,
+    create_playwright_browser,
     extract_links,
     fetch,
     pop_next_batch,
@@ -161,129 +163,142 @@ async def crawl_university(
     fetched_seed_pages = fetched_discovered_pages = fetched_root_pages = 0
 
     # ── BFS loop ───────────────────────────────────────────────────────────────
-    async with aiohttp.ClientSession() as session:
-        while to_visit and len(visited) < max_pages:
-            batch = pop_next_batch(
-                to_visit,
-                visited,
-                to_visit_set,
-                batch_size=12,
-                required_seed_visits_remaining=max(0, required_seed_visits),
-            )
-            if not batch:
-                break
-            required_seed_visits = max(
-                0, required_seed_visits - sum(1 for item in batch if item.source == "seed")
-            )
-
-            pages = await asyncio.gather(*[fetch(session, item.url) for item in batch])
-
-            for queue_item, html in zip(batch, pages):
-                url = queue_item.url
-                if not html:
-                    continue
-
-                if queue_item.source == "seed":
-                    fetched_seed_pages += 1
-                elif queue_item.source == "root":
-                    fetched_root_pages += 1
-                else:
-                    fetched_discovered_pages += 1
-
-                soup = BeautifulSoup(html, "lxml")
-                for el in soup(["script", "style", "nav", "footer", "header"]):
-                    el.decompose()
-                text = sanitize_text_for_llm(soup.get_text(separator="\n", strip=True))
-
-                score_breakdown = is_funding_relevant(
-                    url, text, keyword_pattern, custom_keywords, query_constraints
+    browser, pw_handle = await create_playwright_browser()
+    pw_semaphore = asyncio.Semaphore(_PLAYWRIGHT_CONCURRENCY)
+    try:
+        async with aiohttp.ClientSession() as session:
+            while to_visit and len(visited) < max_pages:
+                batch = pop_next_batch(
+                    to_visit,
+                    visited,
+                    to_visit_set,
+                    batch_size=12,
+                    required_seed_visits_remaining=max(0, required_seed_visits),
                 )
-                page_payload = _build_page_payload(
-                    url=url,
-                    title=soup.title.string if soup.title else "No title",
-                    text=text,
-                    relevance_score=score_breakdown.score,
-                    score_breakdown=score_breakdown,
-                    crawl_source=queue_item.source,
-                    page_type="funding_page" if score_breakdown.is_relevant else "crawled_page",
+                if not batch:
+                    break
+                required_seed_visits = max(
+                    0, required_seed_visits - sum(1 for item in batch if item.source == "seed")
                 )
-                fetched_page_results.append(page_payload)
-                if score_breakdown.is_relevant:
-                    results.append(page_payload)
 
-                # Enqueue new links
-                source_boost = (
-                    60
-                    if score_breakdown.is_relevant
-                    else (
-                        25
-                        if (
-                            score_breakdown.text_matches_funding
-                            or score_breakdown.has_doctoral_terms
-                        )
-                        else 0
-                    )
+                pages = await asyncio.gather(
+                    *[fetch(session, item.url, browser=browser, pw_semaphore=pw_semaphore)
+                      for item in batch]
                 )
-                for link in extract_links(html, url):
-                    if link not in visited and link not in to_visit_set:
-                        priority = (
-                            score_link_priority(link, custom_keywords, query_constraints)
-                            + source_boost
-                        )
-                        to_visit.append(CrawlQueueItem(url=link, priority=priority, source=url))
-                        to_visit_set.add(link)
 
-        # ── Fallback search ────────────────────────────────────────────────────
-        avg_score = (
-            sum(p.get("relevance_score", 0) for p in fetched_page_results)
-            / len(fetched_page_results)
-            if fetched_page_results
-            else 0
-        )
-        weak_crawl = len(fetched_page_results) < 3 and avg_score < 20
-        if not fetched_page_results or weak_crawl:
-            logger.info(
-                "Triggering fallback for %s (pages=%d avg_score=%.1f weak=%s)",
-                domain_url,
-                len(fetched_page_results),
-                avg_score,
-                weak_crawl,
-            )
-            fallback_entries = search_fallback_urls(domain_url, user_query, query_constraints)
-            if fallback_entries:
-                fallback_pages = await asyncio.gather(
-                    *[fetch(session, e.get("url", "")) for e in fallback_entries]
-                )
-                for entry, html in zip(fallback_entries, fallback_pages):
-                    url = entry.get("url", "")
-                    title = entry.get("title", "") or "No title"
-                    if html:
-                        soup = BeautifulSoup(html, "lxml")
-                        for el in soup(["script", "style", "nav", "footer", "header"]):
-                            el.decompose()
-                        text = sanitize_text_for_llm(soup.get_text(separator="\n", strip=True))
+                for queue_item, html in zip(batch, pages):
+                    url = queue_item.url
+                    if not html:
+                        continue
+
+                    if queue_item.source == "seed":
+                        fetched_seed_pages += 1
+                    elif queue_item.source == "root":
+                        fetched_root_pages += 1
                     else:
-                        text = sanitize_text_for_llm(f"{title}\n{entry.get('snippet', '')}")
-                        if not text:
-                            continue
+                        fetched_discovered_pages += 1
+
+                    soup = BeautifulSoup(html, "lxml")
+                    for el in soup(["script", "style", "nav", "footer", "header"]):
+                        el.decompose()
+                    text = sanitize_text_for_llm(soup.get_text(separator="\n", strip=True))
 
                     score_breakdown = is_funding_relevant(
                         url, text, keyword_pattern, custom_keywords, query_constraints
                     )
-                    fb_payload = _build_page_payload(
+                    page_payload = _build_page_payload(
                         url=url,
-                        title=title,
+                        title=soup.title.string if soup.title else "No title",
                         text=text,
                         relevance_score=score_breakdown.score,
                         score_breakdown=score_breakdown,
-                        crawl_source="search_fallback",
-                        page_type="funding_page"
-                        if score_breakdown.is_relevant
-                        else "search_result",
+                        crawl_source=queue_item.source,
+                        page_type="funding_page" if score_breakdown.is_relevant else "crawled_page",
                     )
-                    fetched_page_results.append(fb_payload)
+                    fetched_page_results.append(page_payload)
                     if score_breakdown.is_relevant:
-                        results.append(fb_payload)
+                        results.append(page_payload)
+
+                    # Enqueue new links
+                    source_boost = (
+                        60
+                        if score_breakdown.is_relevant
+                        else (
+                            25
+                            if (
+                                score_breakdown.text_matches_funding
+                                or score_breakdown.has_doctoral_terms
+                            )
+                            else 0
+                        )
+                    )
+                    for link in extract_links(html, url):
+                        if link not in visited and link not in to_visit_set:
+                            priority = (
+                                score_link_priority(link, custom_keywords, query_constraints)
+                                + source_boost
+                            )
+                            to_visit.append(CrawlQueueItem(url=link, priority=priority, source=url))
+                            to_visit_set.add(link)
+
+            # ── Fallback search ────────────────────────────────────────────────────
+            avg_score = (
+                sum(p.get("relevance_score", 0) for p in fetched_page_results)
+                / len(fetched_page_results)
+                if fetched_page_results
+                else 0
+            )
+            weak_crawl = len(fetched_page_results) < 3 and avg_score < 20
+            if not fetched_page_results or weak_crawl:
+                logger.info(
+                    "Triggering fallback for %s (pages=%d avg_score=%.1f weak=%s)",
+                    domain_url,
+                    len(fetched_page_results),
+                    avg_score,
+                    weak_crawl,
+                )
+                fallback_entries = search_fallback_urls(domain_url, user_query, query_constraints)
+                if fallback_entries:
+                    fallback_pages = await asyncio.gather(
+                        *[fetch(session, e.get("url", ""), browser=browser, pw_semaphore=pw_semaphore)
+                          for e in fallback_entries]
+                    )
+                    for entry, html in zip(fallback_entries, fallback_pages):
+                        url = entry.get("url", "")
+                        title = entry.get("title", "") or "No title"
+                        if html:
+                            soup = BeautifulSoup(html, "lxml")
+                            for el in soup(["script", "style", "nav", "footer", "header"]):
+                                el.decompose()
+                            text = sanitize_text_for_llm(soup.get_text(separator="\n", strip=True))
+                        else:
+                            text = sanitize_text_for_llm(f"{title}\n{entry.get('snippet', '')}")
+                            if not text:
+                                continue
+
+                        score_breakdown = is_funding_relevant(
+                            url, text, keyword_pattern, custom_keywords, query_constraints
+                        )
+                        fb_payload = _build_page_payload(
+                            url=url,
+                            title=title,
+                            text=text,
+                            relevance_score=score_breakdown.score,
+                            score_breakdown=score_breakdown,
+                            crawl_source="search_fallback",
+                            page_type="funding_page"
+                            if score_breakdown.is_relevant
+                            else "search_result",
+                        )
+                        fetched_page_results.append(fb_payload)
+                        if score_breakdown.is_relevant:
+                            results.append(fb_payload)
+
+    finally:
+        if browser is not None:
+            await browser.close()
+        if pw_handle is not None:
+            await pw_handle.stop()
 
     # ── Final selection ────────────────────────────────────────────────────────
     final_results, dropped = _select_final_candidates(
