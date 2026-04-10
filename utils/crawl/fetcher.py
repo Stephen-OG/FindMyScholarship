@@ -158,6 +158,15 @@ async def _playwright_fetch(
         try:
             await page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
             await page.wait_for_timeout(2000)
+            # Reject if Playwright followed a redirect off the target domain.
+            # This catches seeded paths that don't exist and redirect to a homepage
+            # or error page on a different host — their content would score 0 anyway.
+            final_url = page.url
+            if final_url and get_domain_scope(final_url) != get_domain_scope(url):
+                logger.debug(
+                    "Playwright redirect off-domain: %s → %s (skipped)", url, final_url
+                )
+                return None
             html = await page.content()
             return html if html and _looks_like_html(html) else None
         finally:
