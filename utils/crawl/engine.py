@@ -21,9 +21,9 @@ from utils.crawl._utils import (
 )
 from utils.crawl.fetcher import (
     _PLAYWRIGHT_CONCURRENCY,
-    playwright_browser,
     extract_links,
     fetch,
+    playwright_browser,
     pop_next_batch,
     search_fallback_urls,
 )
@@ -148,7 +148,7 @@ async def crawl_university(
 
     # ── Build initial queue ────────────────────────────────────────────────────
     to_visit, to_visit_set, required_seed_visits = build_multi_domain_queue(
-        domain_url, query_constraints, extra_seed_domains or [], max_pages
+        domain_url, extra_seed_domains or [], max_pages
     )
     logger.info(
         "Seeded %d target(s) for %s (seed quota: %d)",

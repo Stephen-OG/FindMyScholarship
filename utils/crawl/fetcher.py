@@ -163,9 +163,7 @@ async def _playwright_fetch(
             # or error page on a different host — their content would score 0 anyway.
             final_url = page.url
             if final_url and get_domain_scope(final_url) != get_domain_scope(url):
-                logger.debug(
-                    "Playwright redirect off-domain: %s → %s (skipped)", url, final_url
-                )
+                logger.debug("Playwright redirect off-domain: %s → %s (skipped)", url, final_url)
                 return None
             html = await page.content()
             return html if html and _looks_like_html(html) else None

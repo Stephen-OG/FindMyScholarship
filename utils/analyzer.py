@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import re
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -9,10 +8,11 @@ from agents import function_tool
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
-from pydantic import BaseModel
 
+from models.analyzer_model import AnalyzerResult, UniversityFundingAnalysis
 from models.crawler_model import UniversityResult
 from utils.crawl import get_cached_crawl_payload
+from utils.crawl._utils import sanitize_text_for_llm
 from utils.logger import logger
 
 load_dotenv(override=True)
@@ -30,38 +30,6 @@ def _get_client() -> AsyncOpenAI:
 # Maximum pages to analyze in a single batch (to stay within token limits)
 MAX_PAGES_PER_BATCH = 5
 MAX_CONCURRENT_ANALYSIS_BATCHES = 3
-
-
-def sanitize_text_for_llm(value: str) -> str:
-    """Remove control characters that can break prompt construction or API requests."""
-    cleaned = value or ""
-    cleaned = cleaned.replace("\x00", " ")
-    cleaned = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", cleaned)
-    cleaned = re.sub(r"[ \t]+", " ", cleaned)
-    return cleaned.strip()
-
-
-class AnalyzedFundingPagePayload(BaseModel):
-    url: str
-    title: str
-    opportunities: List[Dict[str, Any]]
-    page_summary: str
-    relevance_to_query: str
-
-
-class UniversityFundingAnalysisPayload(BaseModel):
-    university: str
-    domain: str
-    analyzed_pages: List[AnalyzedFundingPagePayload]
-    total_opportunities: int
-    summary: str
-    best_matches: List[str]
-
-
-class AnalyzerResultPayload(BaseModel):
-    universities: List[UniversityFundingAnalysisPayload]
-    overall_summary: str
-    total_opportunities_found: int
 
 
 async def _analyze_funding_page_impl(
@@ -644,9 +612,9 @@ async def analyze_crawler_results(
             f"{'y' if len(analyzed_universities) == 1 else 'ies'}."
         )
 
-    result_payload = AnalyzerResultPayload(
+    result_payload = AnalyzerResult(
         universities=[
-            UniversityFundingAnalysisPayload.model_validate(university)
+            UniversityFundingAnalysis.model_validate(university)
             for university in analyzed_universities
         ],
         overall_summary=overall_summary,

@@ -264,11 +264,24 @@ def _has_prior_results(history) -> bool:
     1. Length > 400 chars
     2. At least 3 distinct funding-domain terms present
     """
-    _FUNDING_TERMS = frozenset({
-        "scholarship", "studentship", "fellowship", "bursary", "grant",
-        "stipend", "tuition", "funded", "funding", "phd", "doctoral",
-        "masters", "postdoctoral", "assistantship",
-    })
+    _FUNDING_TERMS = frozenset(
+        {
+            "scholarship",
+            "studentship",
+            "fellowship",
+            "bursary",
+            "grant",
+            "stipend",
+            "tuition",
+            "funded",
+            "funding",
+            "phd",
+            "doctoral",
+            "masters",
+            "postdoctoral",
+            "assistantship",
+        }
+    )
     for turn in history:
         ai_msg = None
         if isinstance(turn, (list, tuple)) and len(turn) >= 2:
