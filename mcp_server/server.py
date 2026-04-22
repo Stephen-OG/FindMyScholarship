@@ -22,6 +22,11 @@ Configure in Claude Desktop (~/.claude/claude_desktop_config.json):
 """
 
 import asyncio
+import sys
+from pathlib import Path
+
+# Ensure project root is on sys.path when loaded by `mcp dev` as a standalone file
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mcp.server.fastmcp import FastMCP
 
@@ -39,6 +44,7 @@ mcp = FastMCP(
 
 # ── level keyword enrichment ──────────────────────────────────────────────────
 
+# Canonical → enrichment terms
 _LEVEL_TERMS: dict[str, str] = {
     "undergraduate": "undergraduate scholarship bursary",
     "postgraduate": "postgraduate masters scholarship bursary studentship",
@@ -54,8 +60,33 @@ _GRANT_LEVEL_TERMS: dict[str, str] = {
     "any": "research grant fellowship studentship",
 }
 
+# Aliases → canonical level names
+_LEVEL_ALIASES: dict[str, str] = {
+    "undergrad": "undergraduate",
+    "bachelors": "undergraduate",
+    "bachelor": "undergraduate",
+    "masters": "postgraduate",
+    "master": "postgraduate",
+    "msc": "postgraduate",
+    "mba": "postgraduate",
+    "mres": "postgraduate",
+    "pg": "postgraduate",
+    "phd": "doctoral",
+    "doctorate": "doctoral",
+    "dphil": "doctoral",
+    "postdoc": "postdoctoral",
+    "post-doc": "postdoctoral",
+    "early career": "postdoctoral",
+}
+
+
+def _resolve_level(level: str) -> str:
+    key = level.strip().lower()
+    return _LEVEL_ALIASES.get(key, key)
+
 
 # ── shared formatter ──────────────────────────────────────────────────────────
+
 
 def _format_results(label: str, results: list[dict] | Exception) -> str:
     if isinstance(results, Exception):
@@ -89,6 +120,7 @@ def _format_results(label: str, results: list[dict] | Exception) -> str:
 
 # ── tools ─────────────────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 async def search_scholarships(
     query: str,
@@ -107,6 +139,7 @@ async def search_scholarships(
         country: Region filter — "us", "uk", or "any"
         limit: Max results per source (1-25, default 10)
     """
+    level = _resolve_level(level)
     enriched = f"{query} {_LEVEL_TERMS.get(level, _LEVEL_TERMS['any'])}"
     limit = max(1, min(limit, 25))
 
@@ -117,7 +150,8 @@ async def search_scholarships(
         tasks.append(grants_gov.search(enriched, rows=limit))
         labels.append("Grants.gov (US Federal)")
     if country in ("any", "uk"):
-        tasks.append(ukri.search(enriched, page_size=limit))
+        # UKRI indexes funding type in metadata — enrichment keywords degrade relevance
+        tasks.append(ukri.search(query, page_size=limit))
         labels.append("UKRI Gateway to Research (UK)")
 
     if not tasks:
@@ -146,6 +180,7 @@ async def search_research_grants(
         country: "us", "uk", or "any"
         limit: Max results per source (1-25, default 10)
     """
+    level = _resolve_level(level)
     enriched = f"{subject} {_GRANT_LEVEL_TERMS.get(level, _GRANT_LEVEL_TERMS['any'])}"
     limit = max(1, min(limit, 25))
 
@@ -158,7 +193,7 @@ async def search_research_grants(
         tasks.append(nih.search(enriched, limit=limit))
         labels.append("NIH Reporter (US Biomedical)")
     if country in ("any", "uk"):
-        tasks.append(ukri.search(enriched, page_size=limit))
+        tasks.append(ukri.search(subject, page_size=limit))
         labels.append("UKRI Gateway to Research (UK)")
 
     if not tasks:
@@ -186,6 +221,7 @@ async def search_all_funding(
         country: "us", "uk", or "any"
         limit: Max results per source (1-20, default 8)
     """
+    level = _resolve_level(level)
     level_hint = _LEVEL_TERMS.get(level, _LEVEL_TERMS["any"])
     enriched = f"{query} {level_hint}"
     limit = max(1, min(limit, 20))
@@ -199,7 +235,7 @@ async def search_all_funding(
         tasks.append(nih.search(enriched, limit=limit))
         labels.append("NIH Reporter (US Biomedical)")
     if country in ("any", "uk"):
-        tasks.append(ukri.search(enriched, page_size=limit))
+        tasks.append(ukri.search(query, page_size=limit))
         labels.append("UKRI Gateway to Research (UK)")
 
     if not tasks:

@@ -7,7 +7,8 @@ _DETAIL = "https://gtr.ukri.org/projects?ref={id}"
 
 
 async def search(query: str, page_size: int = 10) -> list[dict]:
-    params = {"q": query, "s": page_size, "p": 1, "sf": "start", "so": "d"}
+    # UKRI GtR only accepts q, s, p — sort params cause 400
+    params = {"q": query[:200], "s": page_size, "p": 1}
     headers = {"Accept": "application/vnd.rcuk.gtr.json-v7"}
 
     async with httpx.AsyncClient(timeout=15) as client:
@@ -19,14 +20,16 @@ async def search(query: str, page_size: int = 10) -> list[dict]:
     for project in data.get("project", []):
         fund = project.get("fund", {})
         amount_pence = fund.get("valuePounds", {}).get("amount")
-        results.append({
-            "title": project.get("title", ""),
-            "funder": fund.get("funder", {}).get("name", "UKRI"),
-            "start": fund.get("start", ""),
-            "end": fund.get("end", ""),
-            "amount": f"£{amount_pence:,}" if amount_pence else "",
-            "url": _DETAIL.format(id=project.get("id", "")),
-            "summary": (project.get("abstractText") or "")[:300],
-            "source": "UKRI Gateway to Research",
-        })
+        results.append(
+            {
+                "title": project.get("title", ""),
+                "funder": fund.get("funder", {}).get("name", "UKRI"),
+                "start": fund.get("start", ""),
+                "end": fund.get("end", ""),
+                "amount": f"£{amount_pence:,}" if amount_pence else "",
+                "url": _DETAIL.format(id=project.get("id", "")),
+                "summary": (project.get("abstractText") or "")[:300],
+                "source": "UKRI Gateway to Research",
+            }
+        )
     return results
