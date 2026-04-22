@@ -36,22 +36,27 @@ tools = [search_agent_tool, crawl_universities_formatted, analyze_crawler_result
 system_prompt = """
 You are FindMyScholarship AI — you help students find university funding opportunities.
 
-WORKFLOW (run each step once, in order):
+WORKFLOW:
 1. NATIONAL DB — call search_scholarships (for student awards) OR search_research_grants
                  (for researcher/PI awards) from the national databases (Grants.gov, UKRI, NIH).
                  Pick whichever fits the query; call it ONCE. This is fast (~2s).
 2. DOMAINS     — call university_domain_search to get official university URLs.
                  If the query names no universities, search up to 5. If the query is
                  too vague, ask the user to narrow it before searching.
-3. CRAWL       — call crawl_universities_formatted in batches of up to 4 universities.
-                 Always pass: user_query AND extracted_keywords (from [SYSTEM CONTEXT]).
-4. ANALYZE     — call analyze_crawler_results once with all crawled universities.
-                 Always pass: user_query AND extracted_keywords (from [SYSTEM CONTEXT]).
-5. PRESENT     — show national database results first, then university-specific results
-                 grouped by institution. Hand off to results_explorer when done.
+3. CRAWL + ANALYZE (repeat until all universities are processed):
+                 a. Call crawl_universities_formatted with a batch of up to 2 universities.
+                    Always pass: user_query AND extracted_keywords (from [SYSTEM CONTEXT]).
+                 b. Immediately call analyze_crawler_results with the universities from
+                    that crawl result. Always pass: user_query AND extracted_keywords.
+                 c. Repeat steps a–b for the next batch of up to 2 universities.
+                 Do NOT crawl all universities first and analyze later — analyze each
+                 batch as soon as it is crawled.
+4. PRESENT     — combine results from all analyze calls. Show national database results
+                 first, then university-specific results grouped by institution.
+                 Hand off to results_explorer when done.
 
 KEYWORDS: The user message contains a [SYSTEM CONTEXT] block with extracted_keywords.
-You MUST forward that exact list to both crawl and analyze tool calls.
+You MUST forward that exact list to BOTH crawl and analyze tool calls in every batch.
 
 OUTPUT RULES:
 - Omit any field (deadline, amount, eligibility) not found — never write "Not specified"
@@ -93,15 +98,16 @@ async def _get_scholarship_agent() -> Agent:
     )
     return _scholarship_agent
 
+
 # Per-tool call limits enforced programmatically (not just via prompt).
 # university_domain_search: 2 — allows one retry if the first result is thin.
-# crawl_universities_formatted: 2 — supports batching across university groups.
-# analyze_crawler_results: 1 — analysis should never be repeated.
+# crawl_universities_formatted: 4 — up to 4 batches of 2 universities = 8 universities max.
+# analyze_crawler_results: 4 — one call per crawl batch (crawl-as-you-analyze pattern).
 # MCP search tools: 1 each — one call covers national databases.
 _TOOL_MAX_CALLS: dict[str, int] = {
     "university_domain_search": 2,
-    "crawl_universities_formatted": 2,
-    "analyze_crawler_results": 1,
+    "crawl_universities_formatted": 4,
+    "analyze_crawler_results": 4,
     "search_scholarships": 1,
     "search_research_grants": 1,
     "search_all_funding": 1,
@@ -428,7 +434,7 @@ async def chat_stream(message: str, history) -> AsyncIterator[str]:
                 Runner.run(
                     active_agent,
                     messages,
-                    max_turns=8 if not is_followup else 3,
+                    max_turns=14 if not is_followup else 3,
                     hooks=guard,
                 ),
                 timeout=300,
@@ -482,7 +488,9 @@ async def chat(message: str, history) -> str:
     messages = _build_messages(message, history)
     try:
         response = await asyncio.wait_for(
-            Runner.run(await _get_scholarship_agent(), messages, max_turns=8, hooks=ToolCallGuard()),
+            Runner.run(
+                await _get_scholarship_agent(), messages, max_turns=14, hooks=ToolCallGuard()
+            ),
             timeout=300,
         )
         return response.final_output
