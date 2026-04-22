@@ -501,9 +501,12 @@ async def analyze_crawler_results(
         cached_funding_pages = cached_crawl_payload.get("funding_pages", []) or []
         cached_candidate_pages = cached_crawl_payload.get("candidate_pages", []) or []
 
-        if len(cached_candidate_pages) > len(candidate_pages):
+        # Always prefer cached pages — they carry full_text.
+        # The tool output only contains lean metadata (url, title, score) since
+        # full page content is stripped before returning to the agent context.
+        if cached_candidate_pages:
             candidate_pages = cached_candidate_pages
-        if len(cached_funding_pages) > len(funding_pages):
+        elif cached_funding_pages:
             funding_pages = cached_funding_pages
         analysis_source_pages = candidate_pages or funding_pages or []
 
