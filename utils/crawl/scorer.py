@@ -20,6 +20,7 @@ from utils.crawl._utils import (
     calculate_funding_depth,
     keyword_variants_for_matching,
     normalized_match_text,
+    url_has_funding_words,
 )
 from utils.crawl.models import PageScoreBreakdown, QueryConstraints
 
@@ -130,6 +131,9 @@ def should_keep_page_for_query(url: str, text: str, constraints: QueryConstraint
     has_taught_only = any(
         t in match_text for t in ["postgraduate taught", "masters", "master's", "undergraduate"]
     )
+    url_is_funding = url_has_funding_words(url) or any(
+        p in url.lower() for p in FUNDING_URL_PATTERNS
+    )
 
     if any(t in constraints.degree_terms for t in ["phd", "doctoral", "doctorate"]):
         if has_subject and has_doctoral:
@@ -141,6 +145,9 @@ def should_keep_page_for_query(url: str, text: str, constraints: QueryConstraint
         if has_research_hub and not has_taught_only:
             return True
         if has_doctoral and not constraints.subject_terms:
+            return True
+        # General funding/scholarship pages are always worth keeping for the analyzer
+        if url_is_funding and not has_taught_only:
             return True
         return False
 
@@ -176,6 +183,10 @@ def explain_page_filter_decision(
         t in match_text for t in ["postgraduate taught", "masters", "master's", "undergraduate"]
     )
 
+    url_is_funding = url_has_funding_words(url) or any(
+        p in url.lower() for p in FUNDING_URL_PATTERNS
+    )
+
     if any(t in constraints.degree_terms for t in ["phd", "doctoral", "doctorate"]):
         if has_subject and has_doctoral:
             return True, "subject + doctoral match"
@@ -185,13 +196,13 @@ def explain_page_filter_decision(
             return True, "doctoral research funding hub"
         if has_research_hub and not has_taught_only:
             return True, "research funding hub"
+        if has_doctoral and not constraints.subject_terms:
+            return True, "doctoral page, no subject constraint"
+        if url_is_funding and not has_taught_only:
+            return True, "funding URL — general scholarship/funding hub"
         if has_taught_only:
             return False, "taught-only or undergraduate page"
-        if constraints.subject_terms and not has_subject:
-            return False, "missing requested subject terms"
-        if not has_doctoral and not has_research_hub:
-            return False, "missing doctoral or research funding signals"
-        return False, "did not satisfy PhD query filter"
+        return False, "missing doctoral, research hub, or funding URL signals"
 
     if constraints.subject_terms and not has_subject:
         return False, "missing requested subject terms"
@@ -248,7 +259,9 @@ def is_funding_relevant(
     constraints: QueryConstraints,
 ) -> PageScoreBreakdown:
     """Score a page for funding relevance. Returns structured breakdown."""
-    url_suggests_funding = any(p in url.lower() for p in FUNDING_URL_PATTERNS)
+    url_suggests_funding = any(
+        p in url.lower() for p in FUNDING_URL_PATTERNS
+    ) or url_has_funding_words(url)
     normalized_url = normalized_match_text(url)
     normalized_text = normalized_match_text(text)
 
@@ -294,7 +307,9 @@ def is_funding_relevant(
     if constraints.subject_terms and not any(
         t in normalized_text for t in constraints.subject_terms
     ):
-        score -= 20
+        # Apply a lighter penalty when the URL itself signals a funding/doctoral page —
+        # general funding hubs are worth analyzing even without an explicit subject mention.
+        score -= 5 if url_suggests_funding else 20
     if any(t in normalized_url for t in ["undergraduate", "postgraduatetaught"]):
         score -= 20
 

@@ -139,6 +139,38 @@ def normalize_query_cache_key(query, keywords: list | None = None) -> str:
 
 # ── URL depth / domain helpers ─────────────────────────────────────────────────
 
+_FUNDING_URL_WORDS = frozenset(
+    {
+        "funding",
+        "scholarship",
+        "scholarships",
+        "bursary",
+        "bursaries",
+        "studentship",
+        "studentships",
+        "financial",
+        "grants",
+        "phdfunding",
+        "financialsupport",
+        "doctoral",
+        "phd",
+        "pgr",
+    }
+)
+
+
+def url_has_funding_words(url: str) -> bool:
+    """
+    Return True if the URL path contains funding- or doctoral-related words
+    at a word-boundary level (splitting on '/', '-', '_').
+
+    Catches slugged paths like /fees-and-funding/, /scholarships-grants-bursaries,
+    /financial-support/, /doctoral-college/ that strict substring checks miss.
+    """
+    path = urlparse(url).path.lower()
+    words = set(re.split(r"[/\-_]", path))
+    return bool(words & _FUNDING_URL_WORDS)
+
 
 def calculate_funding_depth(url: str) -> int:
     """Count how many funding-related terms appear in a URL path."""
