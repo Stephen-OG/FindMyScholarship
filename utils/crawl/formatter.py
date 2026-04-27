@@ -172,14 +172,41 @@ def build_crawler_result(
         ],
     )
 
+    # Strip heavy page content (full_text, text, preview) before returning to the agent.
+    # The agent only needs metadata to route the next tool call; full content is read
+    # from the cache by analyze_crawler_results, keeping the context window lean.
+    lean_universities = []
+    for u in ranked:
+        lean_pages = [
+            {
+                "url": p.get("url", ""),
+                "title": p.get("title", ""),
+                "relevance_score": p.get("relevance_score", 0),
+                "page_type": p.get("page_type", ""),
+                "crawl_source": p.get("crawl_source", ""),
+            }
+            for p in u.get("funding_pages", [])
+        ]
+        lean_universities.append(
+            {
+                "school": u["school"],
+                "domain": u["domain"],
+                "funding_pages": lean_pages,
+                "candidate_pages": [],  # full content lives in cache
+                "access_blocked": u.get("access_blocked", False),
+                "crawl_timed_out": u.get("crawl_timed_out", False),
+                "summary": u.get("summary", ""),
+            }
+        )
+
     return {
-        "universities": ranked,
+        "universities": lean_universities,
         "search_strategy": (
             "query-guided crawl with keyword extraction"
             if user_query
             else "domain crawl without query keywords"
         ),
-        "total_funding_pages": sum(len(u["funding_pages"]) for u in ranked),
+        "total_funding_pages": sum(len(u["funding_pages"]) for u in lean_universities),
         "keyword_analysis": {
             "user_query": user_query or "",
             "keywords": extracted_keywords,

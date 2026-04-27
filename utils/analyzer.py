@@ -455,8 +455,7 @@ def _collect_best_matches(analyzed_pages: List[Dict[str, Any]], limit: int = 3) 
     return best_matches
 
 
-@function_tool
-async def analyze_crawler_results(
+async def _analyze_crawler_results(
     universities: List[UniversityResult],
     user_query: str,
     extracted_keywords: Optional[List[str]] = None,
@@ -501,9 +500,12 @@ async def analyze_crawler_results(
         cached_funding_pages = cached_crawl_payload.get("funding_pages", []) or []
         cached_candidate_pages = cached_crawl_payload.get("candidate_pages", []) or []
 
-        if len(cached_candidate_pages) > len(candidate_pages):
+        # Always prefer cached pages — they carry full_text.
+        # The tool output only contains lean metadata (url, title, score) since
+        # full page content is stripped before returning to the agent context.
+        if cached_candidate_pages:
             candidate_pages = cached_candidate_pages
-        if len(cached_funding_pages) > len(funding_pages):
+        elif cached_funding_pages:
             funding_pages = cached_funding_pages
         analysis_source_pages = candidate_pages or funding_pages or []
 
@@ -621,6 +623,9 @@ async def analyze_crawler_results(
         total_opportunities_found=total_opportunities_found,
     )
     return result_payload.model_dump()
+
+
+analyze_crawler_results = function_tool(_analyze_crawler_results)
 
 
 @function_tool

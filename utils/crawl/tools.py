@@ -33,8 +33,7 @@ class UniversityInput(BaseModel):
     domains: Optional[List[str]] = None
 
 
-@function_tool
-async def crawl_universities_formatted(
+async def _crawl_universities_formatted(
     universities: Optional[List[UniversityInput]] = None,
     schools: Optional[List[UniversityInput]] = None,
     domains: Optional[List[str]] = None,
@@ -135,6 +134,9 @@ async def crawl_universities_formatted(
             },
             "relevance_tiers": {"exceptional": 0, "high": 0, "moderate": 0},
         }
+
+
+crawl_universities_formatted = function_tool(_crawl_universities_formatted)
 
 
 @function_tool

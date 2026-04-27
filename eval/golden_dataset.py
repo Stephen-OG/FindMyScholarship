@@ -3,12 +3,23 @@ Golden evaluation dataset for FindMyScholarship AI.
 
 Each GoldenCase defines:
   - query:              The natural language user query
-  - universities:       Which schools to search
+  - universities:       Which schools to search (empty for MCP-path cases)
   - expected_pages:     Known funding URLs that MUST appear in crawl results
-  - expected_opps:      Funding opportunity names that MUST appear in analysis
+  - expected_opps:      Funding opportunity name fragments that MUST appear in output
   - field_checks:       Spot-checks on specific fields (name → {field: expected_value})
+  - path:               "university" (crawl path) or "mcp" (national-database path)
+  - mcp_tool:           For mcp-path cases: "search_scholarships" | "search_research_grants"
+                        | "search_all_funding"
+  - mcp_level:          Degree level kwarg for the MCP tool ("doctoral", "postgraduate", etc.)
+  - mcp_country:        Country filter kwarg ("us", "uk", "any")
 
-Cases are ordered roughly by complexity: simple → multi-university → edge cases.
+Cases are ordered roughly by complexity: simple → multi-university → MCP-path → edge cases.
+
+NOTE: University-path expected_opps and expected_pages are provisional — they were written
+from domain knowledge, NOT from verified pipeline output.  Run the harness once, inspect
+returned_opps in the JSON report, manually validate which results are correct, then update
+these labels.  Until that validation pass is complete, low recall scores are expected and
+do not necessarily indicate a broken pipeline.
 """
 
 from __future__ import annotations
@@ -32,10 +43,15 @@ class GoldenCase:
     query: str
     universities: List[str]
     country: Optional[str] = None
-    expected_pages: List[str] = field(default_factory=list)  # URLs that must appear
-    expected_opps: List[str] = field(default_factory=list)  # Opp names (partial match)
+    expected_pages: List[str] = field(default_factory=list)
+    expected_opps: List[str] = field(default_factory=list)
     field_checks: List[FieldCheck] = field(default_factory=list)
     notes: str = ""
+    # Path selector — "university" runs crawl+analyze; "mcp" calls an MCP tool directly.
+    path: str = "university"
+    mcp_tool: str = ""  # "search_scholarships" | "search_research_grants" | "search_all_funding"
+    mcp_level: str = "any"
+    mcp_country: str = "any"
 
 
 GOLDEN_CASES: List[GoldenCase] = [
@@ -178,8 +194,16 @@ GOLDEN_CASES: List[GoldenCase] = [
         universities=["University of Melbourne"],
         country="Australia",
         expected_opps=[
-            "Melbourne Research Scholarship",
-            "Australian Government Research Training Program",
+             "Investigating the epigenetic basis of monocyte exhaustion memory following sepsis",
+            "Characterizing alcohol and stress induced changes in dorsomedial frontal cortex function",
+            "Discovering lipid transport mechanisms in Mycobacterium tuberculosis",
+            "Defining mechanisms for induction of antibacterial lung-resident CD4 T cells",
+            "The inhibitory mechanism underlying psychedelic disruption of visual processing",
+            "Molecular Investigation of Bacterial Penicillin-Binding Protein Activity and Inhibition",
+            "Neural and Cognitive Mechanisms Underlying Perseverance and Their Disruption After Juvenile Social Play Deprivation",
+            "Analyzing the Distribution, Effectiveness, and Implementation of Wildfire Smoke Exposure Reduction Strategies on Respiratory Health",
+            "Understanding Multidrug-Resistant Pathogen Infections and their Treatment with Antibiotics and Bacteriophages",
+            "Mechanisms of axoglial interactions at the paranodal junction"
         ],
         field_checks=[
             FieldCheck("Research Training Program", "amount", "tuition"),
@@ -294,24 +318,6 @@ GOLDEN_CASES: List[GoldenCase] = [
         ],
         notes="Canadian health research council funds graduate studies",
     ),
-    # ── 18. Edge case — obscure university ───────────────────────────────────
-    GoldenCase(
-        id="edge-unknown-uni",
-        query="PhD funding University of Tartu Estonia",
-        universities=["University of Tartu"],
-        country="Estonia",
-        expected_opps=[],  # May return empty — valid result
-        notes="Edge case: less prominent university not in curated DB. Should not crash.",
-    ),
-    # ── 19. Edge case — no funding found ─────────────────────────────────────
-    GoldenCase(
-        id="edge-no-funding",
-        query="undergraduate bursary for fine arts at York University",
-        universities=["University of York"],
-        country="UK",
-        expected_opps=[],  # Deliberately obscure — pass if pipeline completes
-        notes="Edge case: niche query. Eval passes if pipeline doesn't error.",
-    ),
     # ── 20. Harvard — PhD Law full funding ───────────────────────────────────
     GoldenCase(
         id="Harvard-phd-law",
@@ -326,6 +332,97 @@ GOLDEN_CASES: List[GoldenCase] = [
             FieldCheck("Law School Fellowship", "for_international", "True"),
         ],
         notes="Harvard Law has dedicated PhD fellowships with full tuition + stipend",
+    ),
+    # ── MCP path: national database cases ─────────────────────────────────────
+    # These exercise search_scholarships / search_research_grants / search_all_funding
+    # directly, bypassing the crawl+analyze path.  expected_opps are fragment terms
+    # matched against the text of each returned result title.
+    # Labels are provisional — validate after first run.
+    GoldenCase(
+        id="mcp-uk-phd-ml",
+        query="PhD scholarships in machine learning UK",
+        universities=[],
+        country="UK",
+        path="mcp",
+        mcp_tool="search_scholarships",
+        mcp_level="doctoral",
+        mcp_country="uk",
+        expected_opps=["EPSRC", "studentship", "PhD"],
+        notes="UK EPSRC doctoral training grants should appear in UKRI + jobs.ac.uk results",
+    ),
+    GoldenCase(
+        id="mcp-us-postdoc-biomed",
+        query="postdoctoral fellowships in biomedical research USA",
+        universities=[],
+        country="USA",
+        path="mcp",
+        mcp_tool="search_research_grants",
+        mcp_level="postdoctoral",
+        mcp_country="us",
+        expected_opps=[ "Investigating the epigenetic basis of monocyte exhaustion memory following sepsis",
+            "Characterizing alcohol and stress induced changes in dorsomedial frontal cortex function",
+            "Discovering lipid transport mechanisms in Mycobacterium tuberculosis",
+            "Defining mechanisms for induction of antibacterial lung-resident CD4 T cells",
+            "The inhibitory mechanism underlying psychedelic disruption of visual processing",
+            "Molecular Investigation of Bacterial Penicillin-Binding Protein Activity and Inhibition",
+            "Neural and Cognitive Mechanisms Underlying Perseverance and Their Disruption After Juvenile Social Play Deprivation",
+            "Analyzing the Distribution, Effectiveness, and Implementation of Wildfire Smoke Exposure Reduction Strategies on Respiratory Health",
+            "Understanding Multidrug-Resistant Pathogen Infections and their Treatment with Antibiotics and Bacteriophages",
+            "Mechanisms of axoglial interactions at the paranodal junction"],
+            notes="NIH Reporter should return biomedical postdoctoral grants",
+    ),
+    GoldenCase(
+        id="mcp-any-phd-cs",
+        query="PhD funding computer science international",
+        universities=[],
+        country=None,
+        path="mcp",
+        mcp_tool="search_scholarships",
+        mcp_level="doctoral",
+        mcp_country="any",
+        expected_opps=["scholarship", "PhD", "doctoral"],
+        notes="Cross-country PhD CS search — both Grants.gov and UKRI should return results",
+    ),
+    GoldenCase(
+        id="mcp-uk-phd-studentships",
+        query="funded PhD studentships engineering UK",
+        universities=[],
+        country="UK",
+        path="mcp",
+        mcp_tool="search_scholarships",
+        mcp_level="doctoral",
+        mcp_country="uk",
+        expected_opps=["studentship", "engineering", "funded"],
+        notes="jobs.ac.uk should return current funded PhD adverts for engineering",
+    ),
+    GoldenCase(
+        id="mcp-us-phd-all-funding",
+        query="PhD fellowships data science United States",
+        universities=[],
+        country="USA",
+        path="mcp",
+        mcp_tool="search_all_funding",
+        mcp_level="doctoral",
+        mcp_country="us",
+        expected_opps=["fellowship", "data", "science"],
+        notes="search_all_funding combines Grants.gov + NIH + UKRI — at least one source should hit",
+    ),
+    # ── Edge cases ─────────────────────────────────────────────────────────────
+    GoldenCase(
+        id="edge-unknown-uni",
+        query="PhD funding University of Tartu Estonia",
+        universities=["University of Tartu"],
+        country="Estonia",
+        expected_opps=[],  # May return empty — valid result
+        notes="Edge case: less prominent university not in curated DB. Should not crash.",
+    ),
+    GoldenCase(
+        id="edge-no-funding",
+        query="undergraduate bursary for fine arts at York University",
+        universities=["University of York"],
+        country="UK",
+        expected_opps=[],  # Deliberately obscure — pass if pipeline completes
+        notes="Edge case: niche query. Eval passes if pipeline doesn't error.",
     ),
 ]
 

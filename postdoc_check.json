@@ -1,0 +1,56 @@
+{
+  "run_at": "2026-04-27T21:09:42.669586+00:00",
+  "cached_only": false,
+  "total_cases": 1,
+  "passed_cases": 1,
+  "avg_precision": 0.05,
+  "avg_recall": 0.3333333333333333,
+  "avg_f1": 0.08695652173913045,
+  "avg_field_acc": 1.0,
+  "avg_crawl_hit": 1.0,
+  "avg_judge_score": null,
+  "total_duration_s": 2.2099254750064574,
+  "cases": [
+    {
+      "case_id": "mcp-us-postdoc-biomed",
+      "query": "postdoctoral fellowships in biomedical research USA",
+      "pipeline_ok": true,
+      "error": null,
+      "returned_opps": [
+        "Africa Regional Services Paris Annual Program Statement: ARS Speaker Program",
+        "&#8203;&#8203;FY 2026 Basic Center Program&#8203;",
+        "National Communication System for Runaway and Homeless Youth Program",
+        "Community Services Block Grant (CSBG) Performance Management, Data Collection, and Compliance Support",
+        "Community Services Block Grant (CSBG) Essentials for Improved Outcomes",
+        "Community Services Block Grant (CSBG) Communities of Practice (COP)",
+        "Community Services Block Grant (CSBG) Tribal Capacity Building Training and Technical Assistance (TCBTTA)",
+        "Advancing the Centers of Excellence in Newcomer Health",
+        "Community-Based Participatory Research to Advance Data and Practice Transformation (ADAPT) for Optimizing Oral Health for All (UG3/UH3 Clinical Trial Optional)",
+        "Community Engagement Evaluation and Data Coordination (CEED) Hub to Advance Data and Practice Transformation for Optimizing Oral Health for All (U01, Clinical Trial Not Allowed)",
+        "Investigating the epigenetic basis of monocyte exhaustion memory following sepsis",
+        "Characterizing alcohol and stress induced changes in dorsomedial frontal cortex function",
+        "Discovering lipid transport mechanisms in Mycobacterium tuberculosis",
+        "Defining mechanisms for induction of antibacterial lung-resident CD4 T cells",
+        "The inhibitory mechanism underlying psychedelic disruption of visual processing",
+        "Molecular Investigation of Bacterial Penicillin-Binding Protein Activity and Inhibition",
+        "Neural and Cognitive Mechanisms Underlying Perseverance and Their Disruption After Juvenile Social Play Deprivation",
+        "Analyzing the Distribution, Effectiveness, and Implementation of Wildfire Smoke Exposure Reduction Strategies on Respiratory Health",
+        "Understanding Multidrug-Resistant Pathogen Infections and their Treatment with Antibiotics and Bacteriophages",
+        "Mechanisms of axoglial interactions at the paranodal junction"
+      ],
+      "crawled_pages": [],
+      "precision": 0.05,
+      "recall": 0.3333333333333333,
+      "f1": 0.08695652173913045,
+      "field_acc": 1.0,
+      "crawl_hit": 1.0,
+      "duration_s": 2.2099254750064574,
+      "has_golden_opps": true,
+      "step_timings": {
+        "mcp_call": 1.2017897109908517
+      },
+      "judge_score": null,
+      "field_check_details": []
+    }
+  ]
+}

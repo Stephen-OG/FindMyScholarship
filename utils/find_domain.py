@@ -164,6 +164,10 @@ async def _duckduckgo_search(school: str, country: Optional[str], num: int) -> L
         logger.warning(f"DuckDuckGo search failed for '{school}': {e}")
         return []
 
+    if not isinstance(data, dict):
+        logger.warning(f"DuckDuckGo returned unexpected type {type(data).__name__} for '{school}'")
+        return []
+
     urls: List[str] = []
 
     if data.get("AbstractURL"):
@@ -215,8 +219,7 @@ def _serpapi_search(school: str, country: Optional[str], num: int) -> List[str]:
 # ── Main tool ─────────────────────────────────────────────────────────────────
 
 
-@function_tool
-async def find_university_domain(school: str, country: Optional[str] = None) -> List[str]:
+async def _find_university_domain(school: str, country: Optional[str] = None) -> List[str]:
     """
     Find official university domains using a tiered discovery strategy:
 
@@ -268,3 +271,6 @@ async def find_university_domain(school: str, country: Optional[str] = None) -> 
 
     await cache.set(cache_key, serp_results, DOMAIN_TTL_SECONDS)
     return serp_results
+
+
+find_university_domain = function_tool(_find_university_domain)

@@ -1,7 +1,9 @@
 import asyncio
+import sys
 from typing import Any, AsyncIterator, Optional
 
 from agents import Agent, RunHooks, Runner, handoff
+from agents.mcp import MCPServerStdio
 from openai import AsyncOpenAI
 
 from scholarship_agents.explorer_agent import explorer_agent
@@ -34,18 +36,27 @@ tools = [search_agent_tool, crawl_universities_formatted, analyze_crawler_result
 system_prompt = """
 You are FindMyScholarship AI — you help students find university funding opportunities.
 
-WORKFLOW (run each step once, in order):
-1. DOMAINS  — call university_domain_search to get official university URLs.
-              If the query names no universities, search up to 5. If the query is
-              too vague, ask the user to narrow it before searching.
-2. CRAWL    — call crawl_universities_formatted in batches of up to 4 universities.
-              Always pass: user_query AND extracted_keywords (from [SYSTEM CONTEXT]).
-3. ANALYZE  — call analyze_crawler_results once with all crawled universities.
-              Always pass: user_query AND extracted_keywords (from [SYSTEM CONTEXT]).
-4. PRESENT  — show results grouped by university, then hand off to results_explorer.
+WORKFLOW:
+1. NATIONAL DB — call search_scholarships (for student awards) OR search_research_grants
+                 (for researcher/PI awards) from the national databases (Grants.gov, UKRI, NIH).
+                 Pick whichever fits the query; call it ONCE. This is fast (~2s).
+2. DOMAINS     — call university_domain_search to get official university URLs.
+                 If the query names no universities, search up to 5. If the query is
+                 too vague, ask the user to narrow it before searching.
+3. CRAWL + ANALYZE (repeat until all universities are processed):
+                 a. Call crawl_universities_formatted with a batch of up to 2 universities.
+                    Always pass: user_query AND extracted_keywords (from [SYSTEM CONTEXT]).
+                 b. Immediately call analyze_crawler_results with the universities from
+                    that crawl result. Always pass: user_query AND extracted_keywords.
+                 c. Repeat steps a–b for the next batch of up to 2 universities.
+                 Do NOT crawl all universities first and analyze later — analyze each
+                 batch as soon as it is crawled.
+4. PRESENT     — combine results from all analyze calls. Show national database results
+                 first, then university-specific results grouped by institution.
+                 Hand off to results_explorer when done.
 
 KEYWORDS: The user message contains a [SYSTEM CONTEXT] block with extracted_keywords.
-You MUST forward that exact list to both crawl and analyze tool calls.
+You MUST forward that exact list to BOTH crawl and analyze tool calls in every batch.
 
 OUTPUT RULES:
 - Omit any field (deadline, amount, eligibility) not found — never write "Not specified"
@@ -55,33 +66,69 @@ OUTPUT RULES:
 - Zero results → say so plainly and give 2-3 concrete next steps
 """
 
-scholarship_agent = Agent(
-    name="Scholarship Researcher",
-    instructions=system_prompt,
-    tools=tools,
-    handoffs=[handoff(explorer_agent)],
-    model="gpt-4o-mini",
-)
+# Lazy singletons — MCP server subprocess is started on first SEARCH query,
+# then reused for the lifetime of the app.
+_mcp_server: MCPServerStdio | None = None
+_scholarship_agent: Agent | None = None
+
+
+async def _get_scholarship_agent() -> Agent:
+    """Connect the MCP server on first call and build the agent with it."""
+    global _mcp_server, _scholarship_agent
+    if _scholarship_agent is not None:
+        return _scholarship_agent
+
+    _mcp_server = MCPServerStdio(
+        params={
+            "command": sys.executable,
+            "args": ["-m", "mcp_server.server"],
+        },
+        cache_tools_list=True,
+        client_session_timeout_seconds=30,
+    )
+    await _mcp_server.connect()
+    logger.info("MCP server connected")
+
+    _scholarship_agent = Agent(
+        name="Scholarship Researcher",
+        instructions=system_prompt,
+        tools=tools,
+        mcp_servers=[_mcp_server],
+        handoffs=[handoff(explorer_agent)],
+        model="gpt-4o-mini",
+    )
+    return _scholarship_agent
+
 
 # Per-tool call limits enforced programmatically (not just via prompt).
 # university_domain_search: 2 — allows one retry if the first result is thin.
-# crawl_universities_formatted: 2 — supports batching across university groups.
-# analyze_crawler_results: 1 — analysis should never be repeated.
+# crawl_universities_formatted: 4 — up to 4 batches of 2 universities = 8 universities max.
+# analyze_crawler_results: 4 — one call per crawl batch (crawl-as-you-analyze pattern).
+# MCP search tools: 1 each — one call covers national databases.
 _TOOL_MAX_CALLS: dict[str, int] = {
     "university_domain_search": 2,
-    "crawl_universities_formatted": 2,
-    "analyze_crawler_results": 1,
+    "crawl_universities_formatted": 4,
+    "analyze_crawler_results": 4,
+    "search_scholarships": 1,
+    "search_research_grants": 1,
+    "search_all_funding": 1,
 }
 
 
 # Human-readable progress labels shown in the Gradio chat bubble while the
 # agent is running. Keys match the tool names registered above.
 _TOOL_PROGRESS: dict[str, str] = {
+    "search_scholarships": "Searching national scholarship databases (Grants.gov, UKRI)...",
+    "search_research_grants": "Searching research grant databases (Grants.gov, NIH, UKRI)...",
+    "search_all_funding": "Searching all national funding databases...",
     "university_domain_search": "Searching for university domains...",
     "crawl_universities_formatted": "Crawling university websites for funding pages...",
     "analyze_crawler_results": "Analysing funding pages with AI...",
 }
 _TOOL_DONE: dict[str, str] = {
+    "search_scholarships": "National scholarship results retrieved.",
+    "search_research_grants": "Research grant results retrieved.",
+    "search_all_funding": "National funding results retrieved.",
     "university_domain_search": "University domains found.",
     "crawl_universities_formatted": "Crawl complete.",
     "analyze_crawler_results": "Analysis complete.",
@@ -360,7 +407,7 @@ async def chat_stream(message: str, history) -> AsyncIterator[str]:
         return
 
     is_followup = route == "FOLLOWUP"
-    active_agent = explorer_agent if is_followup else scholarship_agent
+    active_agent = explorer_agent if is_followup else await _get_scholarship_agent()
 
     # Pre-extract keywords once for SEARCH so crawler + analyzer reuse them.
     # FOLLOWUP skips this — explorer has no tools.
@@ -388,7 +435,7 @@ async def chat_stream(message: str, history) -> AsyncIterator[str]:
                 Runner.run(
                     active_agent,
                     messages,
-                    max_turns=8 if not is_followup else 3,
+                    max_turns=14 if not is_followup else 3,
                     hooks=guard,
                 ),
                 timeout=300,
@@ -442,7 +489,9 @@ async def chat(message: str, history) -> str:
     messages = _build_messages(message, history)
     try:
         response = await asyncio.wait_for(
-            Runner.run(scholarship_agent, messages, max_turns=8, hooks=ToolCallGuard()),
+            Runner.run(
+                await _get_scholarship_agent(), messages, max_turns=14, hooks=ToolCallGuard()
+            ),
             timeout=300,
         )
         return response.final_output
