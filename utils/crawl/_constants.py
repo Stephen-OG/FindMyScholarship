@@ -14,7 +14,17 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
-GENERIC_FUNDING_TERMS = {
+GENERIC_QUERY_TERMS = {
+    "phd",
+    "doctoral",
+    "doctorate",
+    "masters",
+    "master",
+    "msc",
+    "undergraduate",
+    "bachelor",
+    "international",
+    "uk",
     "funding",
     "scholarship",
     "scholarships",
@@ -34,18 +44,6 @@ GENERIC_FUNDING_TERMS = {
     "aid",
     "full-funding",
     "tuition-waiver",
-}
-GENERIC_QUERY_TERMS = GENERIC_FUNDING_TERMS | {
-    "phd",
-    "doctoral",
-    "doctorate",
-    "masters",
-    "master",
-    "msc",
-    "undergraduate",
-    "bachelor",
-    "international",
-    "uk",
 }
 FUNDING_PREFERENCE_TERMS = {
     "full funding",
@@ -100,33 +98,6 @@ FUNDING_URL_PATTERNS = [
     "/phdfunding/",
 ]
 
-DOCTORAL_PATH_HINTS = {
-    "phd",
-    "doctoral",
-    "doctorate",
-    "pgr",
-    "pg research",
-    "pg-research",
-    "postgraduate research",
-    "postgraduate-research",
-    "research degree",
-    "research degrees",
-    "research-degrees",
-    "researchdegrees",
-}
-FUNDING_PATH_HINTS = {
-    "funding",
-    "fees funding",
-    "fees-funding",
-    "studentship",
-    "studentships",
-    "scholarship",
-    "scholarships",
-    "phd funding",
-    "phdfunding",
-    "doctoral funding",
-    "doctoral-funding",
-}
 ACADEMIC_HUB_PATH_HINTS = {
     "study",
     "research",
@@ -145,9 +116,6 @@ ACADEMIC_HUB_PATH_HINTS = {
 }
 
 # Queue / crawl limits
-MAX_SEED_URLS = 60
 MAX_AUXILIARY_SEED_DOMAINS = 3
 MAX_TOTAL_INITIAL_QUEUE = 50
-MAIN_DOMAIN_SEED_LIMIT = 24
-AUXILIARY_DOMAIN_SEED_LIMIT = 8
 SEARCH_FALLBACK_URL_LIMIT = 8

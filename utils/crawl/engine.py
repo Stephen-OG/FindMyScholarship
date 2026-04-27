@@ -21,9 +21,9 @@ from utils.crawl._utils import (
 )
 from utils.crawl.fetcher import (
     _PLAYWRIGHT_CONCURRENCY,
-    create_playwright_browser,
     extract_links,
     fetch,
+    playwright_browser,
     pop_next_batch,
     search_fallback_urls,
 )
@@ -148,7 +148,7 @@ async def crawl_university(
 
     # ── Build initial queue ────────────────────────────────────────────────────
     to_visit, to_visit_set, required_seed_visits = build_multi_domain_queue(
-        domain_url, query_constraints, extra_seed_domains or [], max_pages
+        domain_url, extra_seed_domains or [], max_pages
     )
     logger.info(
         "Seeded %d target(s) for %s (seed quota: %d)",
@@ -163,9 +163,8 @@ async def crawl_university(
     fetched_seed_pages = fetched_discovered_pages = fetched_root_pages = 0
 
     # ── BFS loop ───────────────────────────────────────────────────────────────
-    browser, pw_handle = await create_playwright_browser()
-    pw_semaphore = asyncio.Semaphore(_PLAYWRIGHT_CONCURRENCY)
-    try:
+    async with playwright_browser() as browser:
+        pw_semaphore = asyncio.Semaphore(_PLAYWRIGHT_CONCURRENCY) if browser else None
         async with aiohttp.ClientSession() as session:
             while to_visit and len(visited) < max_pages:
                 batch = pop_next_batch(
@@ -182,8 +181,10 @@ async def crawl_university(
                 )
 
                 pages = await asyncio.gather(
-                    *[fetch(session, item.url, browser=browser, pw_semaphore=pw_semaphore)
-                      for item in batch]
+                    *[
+                        fetch(session, item.url, browser=browser, pw_semaphore=pw_semaphore)
+                        for item in batch
+                    ]
                 )
 
                 for queue_item, html in zip(batch, pages):
@@ -260,8 +261,15 @@ async def crawl_university(
                 fallback_entries = search_fallback_urls(domain_url, user_query, query_constraints)
                 if fallback_entries:
                     fallback_pages = await asyncio.gather(
-                        *[fetch(session, e.get("url", ""), browser=browser, pw_semaphore=pw_semaphore)
-                          for e in fallback_entries]
+                        *[
+                            fetch(
+                                session,
+                                e.get("url", ""),
+                                browser=browser,
+                                pw_semaphore=pw_semaphore,
+                            )
+                            for e in fallback_entries
+                        ]
                     )
                     for entry, html in zip(fallback_entries, fallback_pages):
                         url = entry.get("url", "")
@@ -293,12 +301,6 @@ async def crawl_university(
                         fetched_page_results.append(fb_payload)
                         if score_breakdown.is_relevant:
                             results.append(fb_payload)
-
-    finally:
-        if browser is not None:
-            await browser.close()
-        if pw_handle is not None:
-            await pw_handle.stop()
 
     # ── Final selection ────────────────────────────────────────────────────────
     final_results, dropped = _select_final_candidates(

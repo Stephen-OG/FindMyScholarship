@@ -325,7 +325,36 @@ def lookup_university(school: str, country: Optional[str] = None) -> List[str]:
         key=lambda idx: (scores[idx], scores[idx] / max(_entry_token_count(idx), 1)),
         reverse=True,
     )
-    best_entry = _DB[candidates[0]]
+    best_idx = candidates[0]
+    best_entry = _DB[best_idx]
+    query_token_set = set(query_tokens)
+
+    # Exact alias match (e.g. "Caltech", "MIT", "UCL") — always accept.
+    for alias in best_entry.aliases:
+        if set(_tokenize(alias)) == query_token_set:
+            return list(best_entry.domains)
+
+    # Precision guard: require the query tokens to cover STRICTLY MORE than 50%
+    # of at least one source's tokens (canonical name or alias), and that source
+    # must also cover >= 50% of the query. Using strict > 0.5 on query coverage
+    # rejects borderline cases like "University of California" (1 token
+    # "california") against "University of California Berkeley" (2 tokens
+    # "california", "berkeley") where coverage = 1/2 = 50% exactly.
+    passes = False
+    for src in [best_entry.canonical_name] + best_entry.aliases:
+        src_tokens = set(_tokenize(src))
+        if not src_tokens:
+            continue
+        matched = len(query_token_set & src_tokens)
+        query_covers_src = matched / len(src_tokens)
+        src_covers_query = matched / len(query_token_set)
+        if query_covers_src > 0.5 and src_covers_query >= 0.5:
+            passes = True
+            break
+
+    if not passes:
+        return []
+
     return list(best_entry.domains)
 
 

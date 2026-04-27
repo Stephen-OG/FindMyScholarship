@@ -7,13 +7,13 @@ from pydantic import BaseModel
 class FundingOpportunity(BaseModel):
     name: str
     "Name of the scholarship or funding program"
-    degree_level: str
+    degree_level: Optional[str] = None
     "Degree level (PhD, Masters, etc.)"
     field: Optional[str] = None
     "Academic field or discipline"
-    eligibility: str
+    eligibility: Optional[str] = None
     "Eligibility requirements"
-    amount: str
+    amount: Optional[str] = None
     "Funding amount or type"
     deadline: Optional[str] = None
     "Application deadline"
