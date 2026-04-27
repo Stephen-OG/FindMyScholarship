@@ -10,155 +10,163 @@ pinned: false
 
 # 🎓 FindMyScholarship AI
 
-FindMyScholarship AI is an agentic web application that helps students and researchers discover scholarships, funding opportunities, and grants for Master's and PhD programs by automatically searching and analysing official university websites.
+An AI agent that helps students and researchers find scholarships, fellowships, studentships, and research grants — in real time, from authoritative sources.
 
-Instead of relying on static databases, the system dynamically:
-1. Identifies relevant universities from a user's query
-2. Crawls their official domains
-3. Analyses pages to extract funding-related information
-4. Presents results conversationally through an intuitive chat interface
-
-## ✨ Features
-
-* 🔍 **Natural language search** — Ask questions like:
-   * "PhD funding in machine learning in UK universities"
-   * "Master's scholarships for international students in Canada"
-* 🌐 **Automated university domain discovery** — Uses search APIs to locate official school websites
-* 🕸 **Web crawling** — Crawls relevant pages such as:
-   * Scholarships
-   * Funding
-   * Studentships
-   * Graduate admissions
-* 🧠 **AI-powered content analysis** — Extracts and summarises relevant funding information
-* 💬 **Conversational interface (Gradio)** — Results appear as a persistent chat history (previous answers are not lost)
-* 🧹 **Clean UX**
-   * Input field clears after each query
-   * Results accumulate instead of overwriting
-   * No loading "…" ambiguity — real responses only
-
-## 🧠 Architecture Overview
-
-```
-User Query
-   ↓
-Scholarship Agent
-   ↓
-Domain Finder (search engine / SerpAPI)
-   ↓
-Web Crawler (official university pages)
-   ↓
-Analyzer (LLM-based relevance extraction)
-   ↓
-Gradio Chat UI
-```
-
-## 🗂 Project Structure
-
-```
-.
-├── app.py                         # Gradio UI entry point
-├── Dockerfile                     # Hugging Face Docker Space runtime
-├── requirements.txt               # Python dependencies
-├── utils/                         # Crawling, cache, search, analysis helpers
-├── scholarship_agents/
-│   ├── schorlarship_agent.py      # Main agent orchestration
-│   ├── school_domain_agent.py     # University domain discovery agent
-│   ├── crawler_agent.py           # Crawling agent
-│   ├── analyzer_agent.py          # Funding analysis agent
-│   └── __init__.py
-```
-
-## 🚀 Getting Started
-
-### 1️⃣ Clone the repository
-
-```bash
-git clone https://github.com/<your-username>/FindMyScholarship.git
-cd FindMyScholarship
-```
-
-### 2️⃣ Create a virtual environment (recommended)
-
-```bash
-python -m venv .venv
-source .venv/bin/activate   # macOS/Linux
-# OR
-.venv\Scripts\activate      # Windows
-```
-
-### 3️⃣ Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4️⃣ Environment variables
-
-Create a `.env` file for local development:
-
-```env
-OPENAI_API_KEY=your_openai_key
-SERPAPI_API_KEY=your_serpapi_key
-```
-
-⚠️ **Important:** When deploying to Hugging Face Spaces, do not use `.env`. Instead, set these values in **Space → Settings → Variables and secrets**.
-
-### 5️⃣ Run the app
-
-```bash
-python app.py
-```
-
-Then open the local URL shown in the terminal.
-
-## ☁️ Deployment (Hugging Face Spaces)
-
-This project is configured for a Hugging Face **Docker Space**.
-
-### Steps:
-
-1. Create a new Space and choose **Docker** as the SDK.
-2. Push the full repository to the Space so it includes:
-   * `app.py`
-   * `Dockerfile`
-   * `requirements.txt`
-   * `scholarship_agents/`
-   * `utils/`
-3. In **Space → Settings → Variables and secrets**, add:
-   * `OPENAI_API_KEY`
-   * `SERPAPI_API_KEY`
-4. Restart the Space after adding or updating secrets.
-
-The Space will build the Docker image, install Chromium for Playwright, and then launch the app on port `7860`.
-
-## 🛠 Tech Stack
-
-* **Python 3.10+**
-* **Gradio** — UI & interaction
-* **OpenAI API** — reasoning & summarisation
-* **SerpAPI / Search API** — domain discovery
-* **Requests / BeautifulSoup / aiohttp** — crawling
-* **dotenv** — local environment management
-
-## 🔒 Notes & Limitations
-
-* Results depend on the availability and structure of university websites
-* Some funding pages may block scraping or require authentication
-* API usage may incur costs (OpenAI / SerpAPI)
-* This tool is intended for research assistance, not guaranteed funding accuracy
-
-## 🧭 Future Improvements
-
-* 🔄 Async multi-domain crawling (faster results)
-* 📊 Structured extraction (amount, deadline, eligibility)
-* ⭐ Ranking by relevance score
-* 🧠 Result caching for repeated queries
-* 📱 Mobile-friendly UI improvements
-
-## 📄 License
-
-MIT License — You are free to use, modify, and distribute this project with attribution.
+Instead of a static database, the agent combines **live national funding databases** with **on-demand university website crawling**, then presents results conversationally through a chat interface.
 
 ---
 
-**Made with ❤️ for students seeking funding opportunities**
+## How it works
+
+A single natural-language query triggers a two-track search:
+
+```
+User Query
+    │
+    ├── National DB track (fast, ~2s)
+    │     MCP server queries four live databases in parallel:
+    │       • Grants.gov        (US federal scholarships & research grants)
+    │       • UKRI Gateway to Research  (UK research council funding)
+    │       • NIH Reporter      (NIH-funded biomedical projects)
+    │       • jobs.ac.uk        (UK & international funded PhD studentships)
+    │
+    └── University crawl track
+          Domain discovery → web crawl → LLM analysis
+          Extracts: name, amount, deadline, eligibility, degree level
+```
+
+Results from both tracks are combined and streamed back as a chat response. Follow-up questions (filtering, comparisons) are handled without re-crawling.
+
+---
+
+## Features
+
+- **Natural language queries** — e.g. *"fully funded PhD in machine learning UK"*, *"postdoc fellowships computational biology USA"*
+- **Live national databases** — Grants.gov, UKRI, NIH Reporter, jobs.ac.uk searched in real time
+- **University web crawling** — automatically discovers and crawls official funding pages
+- **LLM-powered extraction** — structured fields (amount, deadline, eligibility, degree level) pulled from raw page content
+- **Conversational follow-ups** — ask clarifying questions without re-triggering a full search
+- **Streaming UI** — progress messages appear as the agent works
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| UI | Gradio (streaming chat) |
+| Agent framework | OpenAI Agents SDK |
+| National DB interface | MCP (Model Context Protocol) server |
+| Web crawling | aiohttp + BeautifulSoup + Playwright |
+| LLM | GPT-4o-mini (routing, extraction, analysis) |
+| Cache | SQLite (aiosqlite) |
+| Runtime | Python 3.12, Docker |
+
+---
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- `OPENAI_API_KEY` — required
+- `SERPAPI_API_KEY` — optional (fallback domain lookup if DuckDuckGo fails)
+
+### Install
+
+```bash
+git clone https://github.com/ogunderoStephen/FindMySchorlarship.git
+cd FindMySchorlarship
+uv sync
+```
+
+### Configure
+
+```bash
+cp .env.example .env   # then fill in your keys
+# or just:
+echo "OPENAI_API_KEY=sk-..." > .env
+```
+
+### Run
+
+```bash
+uv run python app.py
+```
+
+Open the URL printed in the terminal (default: `http://localhost:7860`).
+
+---
+
+## Deployment (Hugging Face Spaces)
+
+This project ships a `Dockerfile` for Hugging Face Docker Spaces.
+
+1. Create a new Space → choose **Docker** as the SDK
+2. Push this repository to the Space
+3. In **Space → Settings → Variables and secrets**, add:
+   - `OPENAI_API_KEY`
+   - `SERPAPI_API_KEY` (optional)
+4. Restart the Space
+
+---
+
+## Project layout
+
+```
+app.py                          # Gradio entry point
+mcp_server/
+  server.py                     # MCP server (4 live funding sources)
+  sources/
+    grants_gov.py               # Grants.gov API
+    ukri.py                     # UKRI Gateway to Research API
+    nih.py                      # NIH Reporter API
+    jobs_ac_uk.py               # jobs.ac.uk PhD listings
+    opportunity_desk.py         # OpportunityDesk aggregator
+scholarship_agents/
+  schorlarship_agent.py         # Main agent (routing, orchestration, streaming)
+  explorer_agent.py             # Follow-up / results explorer agent
+  school_domain_agent.py        # University domain discovery agent
+utils/
+  crawl/                        # Async web crawler (engine, scorer, cache)
+  analyzer.py                   # LLM funding page analysis
+  keyword_extractor.py          # Query → structured keywords
+  university_db.py              # Curated university domain database
+  find_domain.py                # Tiered domain lookup (DB → DDG → SerpAPI)
+eval/
+  harness.py                    # Evaluation harness with metrics
+  golden_dataset.py             # Golden test cases (university + MCP paths)
+```
+
+---
+
+## Engineering challenges
+
+Building this surfaced several non-obvious problems worth documenting.
+
+**1. Crawler blocked in production**
+The initial aiohttp-only crawler worked locally but was blocked by Cloudflare and similar bot-detection on university sites in production. The fix was integrating Playwright for JavaScript-rendered pages and sites that require a real browser fingerprint. The crawler now uses Playwright selectively — aiohttp for straightforward pages, Playwright for those that require it — keeping costs and latency reasonable.
+
+> **What's next here:** Playwright can also be used actively, not just passively — following seeded links, interacting with forms, and navigating paginated funding listings before handing the resulting pages to the analyzer. This would unlock funding databases that require interaction to surface results.
+
+**2. Context window overflow after adding MCP**
+Adding the MCP server (4 national databases) increased the volume of raw text the agent was accumulating before analysis. Running all university crawls first, then analyzing, filled the context window and caused the agent to fail or truncate results.
+
+The solution was a **crawl-and-analyze-per-batch** pattern: after crawling a batch of 2 universities, the agent immediately calls `analyze_crawler_results` on that batch before moving to the next one. The full page text is stripped from the crawler's output before it reaches the agent — only lean metadata (URL, title, relevance score) is returned — while the full text is preserved in a local cache for the analyzer to read directly. This keeps the agent context lean regardless of how many universities are searched.
+
+**3. Follow-up questions re-triggering full crawls**
+Without routing logic, asking *"show me only the fully funded ones"* after a search would launch a new crawl instead of filtering the existing results. The fix was a lightweight LLM router that classifies each message as `SEARCH`, `FOLLOWUP`, or `GENERAL` before deciding which agent to invoke. Follow-up questions are handed off to a read-only `explorer_agent` that has no crawl tools — it can only reason over what's already in the conversation.
+
+---
+
+## Limitations
+
+- University crawl results depend on page structure and bot-access policies
+- Grants.gov and NIH search against a broad federal corpus — results for academic queries may include non-academic programs
+- API usage incurs costs (OpenAI, optionally SerpAPI)
+- Results are for research assistance; verify deadlines and eligibility directly with funders
+
+---
+
+**Made for students and researchers who shouldn't have to spend hours hunting for funding.**

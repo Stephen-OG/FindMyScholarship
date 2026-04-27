@@ -84,6 +84,7 @@ async def _get_scholarship_agent() -> Agent:
             "args": ["-m", "mcp_server.server"],
         },
         cache_tools_list=True,
+        client_session_timeout_seconds=30,
     )
     await _mcp_server.connect()
     logger.info("MCP server connected")

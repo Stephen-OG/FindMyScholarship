@@ -1,10 +1,11 @@
 """
 FindMyScholarship MCP Server
 
-Exposes real-time academic funding data from three public APIs:
+Exposes real-time academic funding data from four public sources:
   - Grants.gov       (US federal scholarships & research grants)
   - UKRI GtR         (UK research council funded projects)
   - NIH Reporter     (NIH-funded biomedical research grants)
+  - jobs.ac.uk       (UK & international funded PhD studentships)
 
 Run with:
     python -m mcp_server.server
@@ -30,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_server.sources import grants_gov, nih, ukri
+from mcp_server.sources import grants_gov, jobs_ac_uk, nih, opportunity_desk, ukri
 
 mcp = FastMCP(
     "FindMyScholarship",
@@ -38,7 +39,7 @@ mcp = FastMCP(
         "Provides real-time academic funding opportunities — scholarships, bursaries, "
         "studentships, fellowships, and research grants — for undergraduate, postgraduate, "
         "doctoral, and postdoctoral students. Data is fetched live from Grants.gov (US), "
-        "UKRI Gateway to Research (UK), and NIH Reporter (US)."
+        "UKRI Gateway to Research (UK), NIH Reporter (US), and jobs.ac.uk (UK PhD studentships)."
     ),
 )
 
@@ -153,6 +154,15 @@ async def search_scholarships(
         # UKRI indexes funding type in metadata — enrichment keywords degrade relevance
         tasks.append(ukri.search(query, page_size=limit))
         labels.append("UKRI Gateway to Research (UK)")
+        # jobs.ac.uk lists funded PhD studentships from UK & international universities
+        if level in ("doctoral", "any"):
+            tasks.append(jobs_ac_uk.search(query, limit=limit))
+            labels.append("jobs.ac.uk (PhD Studentships)")
+
+    # Opportunity Desk uses WordPress search which works best with short, natural queries —
+    # pass the original query without level-enrichment terms.
+    tasks.append(opportunity_desk.search(query, limit=limit))
+    labels.append("Opportunity Desk (Global)")
 
     if not tasks:
         return "Unsupported country filter. Use 'us', 'uk', or 'any'."
@@ -237,6 +247,13 @@ async def search_all_funding(
     if country in ("any", "uk"):
         tasks.append(ukri.search(query, page_size=limit))
         labels.append("UKRI Gateway to Research (UK)")
+        if level in ("doctoral", "any"):
+            tasks.append(jobs_ac_uk.search(query, limit=limit))
+            labels.append("jobs.ac.uk (PhD Studentships)")
+
+    # Opportunity Desk uses WordPress search — pass the original query without enrichment.
+    tasks.append(opportunity_desk.search(query, limit=limit))
+    labels.append("Opportunity Desk (Global)")
 
     if not tasks:
         return "Unsupported country filter. Use 'us', 'uk', or 'any'."
@@ -260,6 +277,8 @@ async def list_funding_sources() -> str:
 | [Grants.gov](https://www.grants.gov) | USA | All US federal funding: scholarships, fellowships, research grants across all degree levels |
 | [UKRI Gateway to Research](https://gtr.ukri.org) | UK | UKRI-funded projects: doctoral studentships, postdoctoral fellowships, early-career grants |
 | [NIH Reporter](https://reporter.nih.gov) | USA | NIH-funded biomedical & health research: PhD, postdoc, and faculty-level grants |
+| [jobs.ac.uk](https://www.jobs.ac.uk/search/phds) | UK & International | Funded PhD studentships from UK and international universities with stipend amounts |
+| [Opportunity Desk](https://opportunitydesk.org) | Global | International scholarships, fellowships, competitions, and grants across all levels |
 
 **All data is fetched live** — results reflect currently open and forecasted opportunities.
 

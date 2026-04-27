@@ -455,8 +455,7 @@ def _collect_best_matches(analyzed_pages: List[Dict[str, Any]], limit: int = 3) 
     return best_matches
 
 
-@function_tool
-async def analyze_crawler_results(
+async def _analyze_crawler_results(
     universities: List[UniversityResult],
     user_query: str,
     extracted_keywords: Optional[List[str]] = None,
@@ -624,6 +623,9 @@ async def analyze_crawler_results(
         total_opportunities_found=total_opportunities_found,
     )
     return result_payload.model_dump()
+
+
+analyze_crawler_results = function_tool(_analyze_crawler_results)
 
 
 @function_tool
