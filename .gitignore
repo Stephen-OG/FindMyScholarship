@@ -184,8 +184,12 @@ cache/
 *.db-shm
 *.db-wal
 
-# Generated evaluation reports
-eval/last_report.json
+# Generated evaluation reports — keep golden_dataset.py and harness.py, ignore output files
+eval/*.json
+baseline*.json
+run*.json
+postdoc_check.json
+*_check.json
 
 # Ignore Crew engineering team output
 3_crew/engineering_team/output/
