@@ -1,13 +1,3 @@
----
-title: FindMyScholarship AI
-emoji: 🎓
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # 🎓 FindMyScholarship AI
 
 An AI agent that helps students and researchers find scholarships, fellowships, studentships, and research grants — in real time, from authoritative sources.
