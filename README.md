@@ -130,7 +130,6 @@ eval/
 ```
 
 ---
-
 ## Engineering challenges
 
 Building this surfaced several non-obvious problems worth documenting.
@@ -158,5 +157,6 @@ Without routing logic, asking *"show me only the fully funded ones"* after a sea
 - Results are for research assistance; verify deadlines and eligibility directly with funders
 
 ---
+Test Link: https://huggingface.co/spaces/StephOG/FindMyScholarship
 
 **Made for students and researchers who shouldn't have to spend hours hunting for funding.**
